@@ -1,10 +1,18 @@
 import { VERTEX_SRC } from './glsl';
 import type { Aabb, Material, Vec3 } from '../core/types';
-import type { RenderSettings } from './settings';
+import type { RenderSettings, ViewMode } from './settings';
 import type { CameraState, RenderScene } from './types';
 
-export type { RenderSettings } from './settings';
+export type { RenderSettings, ViewMode } from './settings';
 export type { CameraState, RenderScene } from './types';
+
+const VIEW_CODE: Record<ViewMode, number> = {
+  shaded: 0,
+  normals: 1,
+  curvature: 2,
+  zebra: 3,
+  gradient: 4,
+};
 
 export const defaultCamera = (): CameraState => ({
   yaw: 0.72,
@@ -196,6 +204,17 @@ export class Renderer {
     gl.uniform1f(this.u('u_floorY'), floorY);
     gl.uniform3f(this.u('u_bgA'), 0.020, 0.028, 0.038);
     gl.uniform3f(this.u('u_bgB'), 0.004, 0.006, 0.009);
+
+    // smoothness analysis
+    const size = Math.hypot(
+      this.bounds.max[0] - this.bounds.min[0],
+      this.bounds.max[1] - this.bounds.min[1],
+      this.bounds.max[2] - this.bounds.min[2],
+    );
+    const eps = Math.min(0.04, Math.max(0.0012, size * 0.003));
+    gl.uniform1i(this.u('u_view'), VIEW_CODE[settings.view] ?? 0);
+    gl.uniform1f(this.u('u_curvEps'), eps);
+    gl.uniform1f(this.u('u_curvScale'), Math.max(0.05, settings.curvatureScale ?? 4));
 
     if (this.values.length > 0) gl.uniform1fv(this.u('u_values[0]'), this.values);
 

@@ -1,8 +1,11 @@
-import { useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from 'react';
 import type { SplineInfo } from '../core/types';
-import { sampleProfile, sampleSpline } from '../core/spline';
+import { curvatureCombs, sampleProfile, sampleSpline } from '../core/spline';
+import { CombSettings } from './CombSettings';
 import { Icon } from './Icon';
+
+export type SplinePlane = 'XY' | 'XZ' | 'YZ';
 
 export interface SplineEditorProps {
   splines: SplineInfo[];
@@ -10,13 +13,23 @@ export interface SplineEditorProps {
   onSelect: (id: string) => void;
   onChange: (id: string, points: number[][]) => void;
   onReset: (id: string) => void;
+  /** curvature comb overlay (controlled so the big workspace can share it) */
+  comb: boolean;
+  onComb: (value: boolean) => void;
+  combDensity: number;
+  combScale: number;
+  onCombDensity: (value: number) => void;
+  onCombScale: (value: number) => void;
+  /** plane used by the 2D projection of 3D splines */
+  plane: SplinePlane;
+  onPlane: (plane: SplinePlane) => void;
+  /** hide the dock header when embedded in the workspace */
+  hideHeader?: boolean;
 }
-
-type Plane = 'XY' | 'XZ' | 'YZ';
 
 const AXIS_LABEL = ['x', 'y', 'z'];
 
-const axesFor = (s: SplineInfo, plane: Plane): [number, number] =>
+const axesFor = (s: SplineInfo, plane: SplinePlane): [number, number] =>
   s.dim === 2 ? [0, 1] : plane === 'XY' ? [0, 1] : plane === 'XZ' ? [0, 2] : [1, 2];
 
 interface View {
@@ -55,8 +68,22 @@ function niceStep(raw: number): number {
 
 const AXIS_COLORS = ['#d98a7a', '#8fc79a', '#7fa6d9'];
 
-export function SplineEditor({ splines, selected, onSelect, onChange, onReset }: SplineEditorProps) {
-  const [plane, setPlane] = useState<Plane>('XY');
+export function SplineEditor({
+  splines,
+  selected,
+  onSelect,
+  onChange,
+  onReset,
+  comb,
+  onComb,
+  combDensity,
+  combScale,
+  onCombDensity,
+  onCombScale,
+  plane,
+  onPlane,
+  hideHeader = false,
+}: SplineEditorProps) {
   const [active, setActive] = useState(0);
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [hover, setHover] = useState<{ x: number; y: number } | null>(null);
@@ -64,18 +91,79 @@ export function SplineEditor({ splines, selected, onSelect, onChange, onReset }:
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const dragRef = useRef<number | null>(null);
-  const viewRef = useRef<{ key: string; view: View } | null>(null);
+  const panRef = useRef<{ x: number; y: number } | null>(null);
+  const [view, setView] = useState<View | null>(null);
+  const viewRef = useRef<View>({ cx: 0, cy: 0, scale: 60 });
 
   const spline = splines.find((s) => s.id === selected) ?? splines[0] ?? null;
   const axes = spline ? axesFor(spline, plane) : ([0, 1] as [number, number]);
-  const key = spline
+  const fitKey = spline
     ? `${spline.id}|${axes.join()}|${spline.points.length}|${Math.round(size.w)}x${Math.round(size.h)}|${fitNonce}`
     : '';
 
-  if (spline && (!viewRef.current || viewRef.current.key !== key)) {
-    viewRef.current = { key, view: fitView(spline, axes, size.w || 320, size.h || 140) };
-  }
-  const view = viewRef.current?.view ?? { cx: 0, cy: 0, scale: 60 };
+  // refit when the curve/size/plane changes; pan & zoom persist otherwise
+  useEffect(() => {
+    if (!spline) return;
+    setView(fitView(spline, axes, size.w || 320, size.h || 140));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fitKey]);
+
+  const actualView =
+    view ??
+    (spline ? fitView(spline, axes, size.w || 320, size.h || 140) : { cx: 0, cy: 0, scale: 60 });
+  viewRef.current = actualView;
+
+  const sampled = useMemo(() => {
+    if (!spline) return [];
+    return spline.kind === 'spline'
+      ? sampleSpline(spline.points, spline.closed, 12)
+      : sampleProfile(spline.points, spline.closed, 12);
+  }, [spline]);
+
+  // the comb uses its own sampling so the density slider can exceed the
+  // drawing resolution of the curve
+  const combSampled = useMemo(() => {
+    if (!comb || !spline) return [];
+    const spans = spline.closed
+      ? Math.max(1, spline.points.length)
+      : Math.max(1, spline.points.length - 1);
+    const per = Math.max(2, Math.min(64, Math.ceil(combDensity / spans)));
+    return spline.kind === 'spline'
+      ? sampleSpline(spline.points, spline.closed, per)
+      : sampleProfile(spline.points, spline.closed, per);
+  }, [comb, spline, combDensity]);
+
+  const combData = useMemo(() => {
+    if (!comb || !spline || combSampled.length < 5) return null;
+    const planar = combSampled.map((p) => [p[axes[0]], p[axes[1]]]);
+    return curvatureCombs(planar, spline.closed, 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [comb, spline, combSampled, axes[0], axes[1]]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const px = e.clientX - rect.left;
+      const py = e.clientY - rect.top;
+      const v = viewRef.current;
+      const factor = Math.exp(-e.deltaY * (e.deltaMode === 1 ? 0.05 : 0.0015));
+      const scale = Math.min(8000, Math.max(4, v.scale * factor));
+      const wx = (px - size.w / 2) / v.scale + v.cx;
+      const wy = (size.h / 2 - py) / v.scale + v.cy;
+      const next = {
+        scale,
+        cx: wx - (px - size.w / 2) / scale,
+        cy: wy - (size.h / 2 - py) / scale,
+      };
+      viewRef.current = next;
+      setView(next);
+    };
+    canvas.addEventListener('wheel', onWheel, { passive: false });
+    return () => canvas.removeEventListener('wheel', onWheel);
+  }, [size.w, size.h]);
 
   useLayoutEffect(() => {
     const wrap = wrapRef.current;
@@ -102,17 +190,17 @@ export function SplineEditor({ splines, selected, onSelect, onChange, onReset }:
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const { w, h } = size;
 
-    const sx = (x: number) => (x - view.cx) * view.scale + w / 2;
-    const sy = (y: number) => h / 2 - (y - view.cy) * view.scale;
+    const sx = (x: number) => (x - actualView.cx) * actualView.scale + w / 2;
+    const sy = (y: number) => h / 2 - (y - actualView.cy) * actualView.scale;
 
     ctx.clearRect(0, 0, w, h);
 
     // grid
-    const step = niceStep(30 / view.scale);
-    const x0 = view.cx - w / 2 / view.scale;
-    const x1 = view.cx + w / 2 / view.scale;
-    const y0 = view.cy - h / 2 / view.scale;
-    const y1 = view.cy + h / 2 / view.scale;
+    const step = niceStep(30 / actualView.scale);
+    const x0 = actualView.cx - w / 2 / actualView.scale;
+    const x1 = actualView.cx + w / 2 / actualView.scale;
+    const y0 = actualView.cy - h / 2 / actualView.scale;
+    const y1 = actualView.cy + h / 2 / actualView.scale;
 
     ctx.lineWidth = 1;
     for (let x = Math.ceil(x0 / step) * step; x <= x1; x += step) {
@@ -136,10 +224,6 @@ export function SplineEditor({ splines, selected, onSelect, onChange, onReset }:
     ctx.fillText(`${step}`, 8, h - 8);
 
     // sampled curve
-    const sampled =
-      spline.kind === 'spline'
-        ? sampleSpline(spline.points, spline.closed, 12)
-        : sampleProfile(spline.points, spline.closed, 12);
     ctx.strokeStyle = '#67b3a8';
     ctx.lineWidth = 1.6;
     ctx.lineJoin = 'round';
@@ -169,6 +253,35 @@ export function SplineEditor({ splines, selected, onSelect, onChange, onReset }:
     ctx.stroke();
     ctx.setLineDash([]);
 
+    // curvature comb
+    if (combData && combData.spikes.length > 1) {
+      const maxK = combData.maxK || 1;
+      const tips: Array<[number, number]> = [];
+      ctx.lineWidth = 1;
+      for (const spike of combData.spikes) {
+        const bx = sx(spike.point[0]);
+        const by = sy(spike.point[1]);
+        const len = Math.min(220, Math.max(2, (spike.k / maxK) * 42 * combScale));
+        const tx = bx + spike.dir[0] * len;
+        const ty = by - spike.dir[1] * len;
+        tips.push([tx, ty]);
+        ctx.strokeStyle = 'rgba(224, 162, 103, 0.5)';
+        ctx.beginPath();
+        ctx.moveTo(bx, by);
+        ctx.lineTo(tx, ty);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(tx, ty, 1.2, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(240, 184, 120, 0.8)';
+        ctx.fill();
+      }
+      ctx.strokeStyle = 'rgba(224, 162, 103, 0.25)';
+      ctx.beginPath();
+      tips.forEach(([x, y], i) => (i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
+      if (spline.closed) ctx.closePath();
+      ctx.stroke();
+    }
+
     // points
     spline.points.forEach((p, i) => {
       const px = sx(p[axes[0]]);
@@ -195,28 +308,42 @@ export function SplineEditor({ splines, selected, onSelect, onChange, onReset }:
       ctx.lineTo(w, py);
       ctx.stroke();
     }
-  }, [spline, view, size, axes, active, hover]);
+  }, [spline, actualView, size, axes, active, hover, sampled, combData, combScale]);
 
   const toWorld = (e: ReactPointerEvent | ReactMouseEvent) => {
     const rect = canvasRef.current!.getBoundingClientRect();
     const px = e.clientX - rect.left;
     const py = e.clientY - rect.top;
+    const v = viewRef.current;
     return {
       px,
       py,
-      x: (px - size.w / 2) / view.scale + view.cx,
-      y: (size.h / 2 - py) / view.scale + view.cy,
+      x: (px - size.w / 2) / v.scale + v.cx,
+      y: (size.h / 2 - py) / v.scale + v.cy,
     };
   };
 
   const onPointerDown = (e: ReactPointerEvent) => {
     if (!spline) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    canvas.setPointerCapture(e.pointerId);
+    const v = viewRef.current;
+
+    // middle/right button pans, even when starting on a control point
+    if (e.button !== 0) {
+      panRef.current = { x: e.clientX, y: e.clientY };
+      canvas.classList.add('panning');
+      e.preventDefault();
+      return;
+    }
+
     const { px, py } = toWorld(e);
     let best = -1;
     let bestD = 16;
     spline.points.forEach((p, i) => {
-      const dx = (p[axes[0]] - view.cx) * view.scale + size.w / 2 - px;
-      const dy = size.h / 2 - (p[axes[1]] - view.cy) * view.scale - py;
+      const dx = (p[axes[0]] - v.cx) * v.scale + size.w / 2 - px;
+      const dy = size.h / 2 - (p[axes[1]] - v.cy) * v.scale - py;
       const d = Math.hypot(dx, dy);
       if (d < bestD) {
         bestD = d;
@@ -226,12 +353,27 @@ export function SplineEditor({ splines, selected, onSelect, onChange, onReset }:
     if (best >= 0) {
       setActive(best);
       dragRef.current = best;
-      (e.target as HTMLElement).setPointerCapture(e.pointerId);
       e.preventDefault();
+      return;
     }
+
+    // empty space: pan
+    panRef.current = { x: e.clientX, y: e.clientY };
+    canvas.classList.add('panning');
+    e.preventDefault();
   };
 
   const onPointerMove = (e: ReactPointerEvent) => {
+    if (panRef.current) {
+      const dx = e.clientX - panRef.current.x;
+      const dy = e.clientY - panRef.current.y;
+      panRef.current = { x: e.clientX, y: e.clientY };
+      const v = viewRef.current;
+      const next = { ...v, cx: v.cx - dx / v.scale, cy: v.cy + dy / v.scale };
+      viewRef.current = next;
+      setView(next);
+      return;
+    }
     if (!spline) return;
     const w = toWorld(e);
     setHover({ x: w.x, y: w.y });
@@ -249,6 +391,8 @@ export function SplineEditor({ splines, selected, onSelect, onChange, onReset }:
 
   const onPointerUp = (e: ReactPointerEvent) => {
     dragRef.current = null;
+    panRef.current = null;
+    canvasRef.current?.classList.remove('panning');
     try {
       (e.target as HTMLElement).releasePointerCapture(e.pointerId);
     } catch {
@@ -282,19 +426,47 @@ export function SplineEditor({ splines, selected, onSelect, onChange, onReset }:
 
   return (
     <section className="dock-panel splines">
+      {!hideHeader && (
       <header className="dock-head">
         <span className="dock-title">splines</span>
         <span className="dock-count">{splines.length}</span>
-        {is3d && (
-          <div className="segmented tiny" role="tablist" aria-label="edit plane">
-            {(['XY', 'XZ', 'YZ'] as Plane[]).map((p) => (
-              <button key={p} className={plane === p ? 'active' : ''} onClick={() => setPlane(p)}>
-                {p}
-              </button>
-            ))}
-          </div>
-        )}
+        <div className="spline-head-actions">
+          {is3d && (
+            <div className="segmented tiny" role="tablist" aria-label="edit plane">
+              {(['XY', 'XZ', 'YZ'] as SplinePlane[]).map((p) => (
+                <button key={p} className={plane === p ? 'active' : ''} onClick={() => onPlane(p)}>
+                  {p}
+                </button>
+              ))}
+            </div>
+          )}
+          <button
+            className={`ghostbtn combbtn ${comb ? 'on' : ''}`}
+            onClick={() => onComb(!comb)}
+            disabled={!spline}
+            aria-pressed={comb}
+            title={
+              spline
+                ? 'Curvature comb — spikes of length κ = 1/R along the selected curve'
+                : 'Add a spline or profile to use curvature combs'
+            }
+          >
+            <Icon name="comb" size={13} /> <span className="comb-label">comb</span>
+          </button>
+        </div>
       </header>
+      )}
+
+      {!hideHeader && comb && (
+        <div className="comb-row">
+          <CombSettings
+            density={combDensity}
+            scale={combScale}
+            onDensity={onCombDensity}
+            onScale={onCombScale}
+          />
+        </div>
+      )}
 
       {!spline ? (
         <p className="dock-empty">
@@ -302,6 +474,7 @@ export function SplineEditor({ splines, selected, onSelect, onChange, onReset }:
         </p>
       ) : (
         <>
+          {!hideHeader && (
           <div className="spline-tabs">
             {splines.map((s) => (
               <button
@@ -315,16 +488,19 @@ export function SplineEditor({ splines, selected, onSelect, onChange, onReset }:
               </button>
             ))}
           </div>
+          )}
 
           <div className="spline-canvas-wrap" ref={wrapRef}>
             <canvas
-              data-spline={JSON.stringify({ view, axes, points: spline.points })}
+              data-spline={JSON.stringify({ view: actualView, axes, points: spline.points })}
               ref={canvasRef}
+              title="Drag a point to edit · drag empty space to pan · wheel to zoom"
               onPointerDown={onPointerDown}
               onPointerMove={onPointerMove}
               onPointerUp={onPointerUp}
               onPointerCancel={onPointerUp}
               onPointerLeave={() => setHover(null)}
+              onContextMenu={(e) => e.preventDefault()}
               onDoubleClick={(e) => {
                 const w = toWorld(e);
                 const last = spline.points[spline.points.length - 1] ?? [0, 0, 0];
@@ -334,6 +510,13 @@ export function SplineEditor({ splines, selected, onSelect, onChange, onReset }:
                 onChange(spline.id, [...spline.points.map((p) => [...p]), next]);
               }}
             />
+            <button
+              className="canvas-fit"
+              title="Fit the curve (pan and zoom are reset)"
+              onClick={() => setFitNonce((n) => n + 1)}
+            >
+              <Icon name="frame" size={12} />
+            </button>
             {hover && (
               <div className="spline-readout">
                 {axisLabels[axes[0]]} {hover.x.toFixed(2)} · {axisLabels[axes[1]]} {hover.y.toFixed(2)}
@@ -356,6 +539,7 @@ export function SplineEditor({ splines, selected, onSelect, onChange, onReset }:
             <span className="grow" />
             <span className="spline-meta">
               {spline.points.length} pts · {spline.closed ? 'closed' : 'open'}
+              {combData ? ` · κmax ${combData.maxK.toFixed(2)}` : ''}
             </span>
             <button
               className="ghostbtn"

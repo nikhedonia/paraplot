@@ -17,6 +17,10 @@ export type IconName =
   | 'eyeOff'
   | 'target'
   | 'tree'
+  | 'comb'
+  | 'panelLeft'
+  | 'panelRight'
+  | 'panelBottom'
   | 'logo';
 
 const paths: Record<IconName, ReactNode> = {
@@ -99,6 +103,30 @@ const paths: Record<IconName, ReactNode> = {
       <rect x="11" y="6" width="9" height="4" rx="1" />
       <rect x="11" y="12" width="9" height="4" rx="1" />
       <rect x="11" y="18" width="9" height="4" rx="1" />
+    </>
+  ),
+  comb: (
+    <>
+      <path d="M3 18h18" />
+      <path d="M6 18V9M10 18v-5M14 18V8M18 18v-4" />
+    </>
+  ),
+  panelLeft: (
+    <>
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M9.5 4v16" />
+    </>
+  ),
+  panelRight: (
+    <>
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M14.5 4v16" />
+    </>
+  ),
+  panelBottom: (
+    <>
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M3 15.5h18" />
     </>
   ),
   pause: (

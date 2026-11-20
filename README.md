@@ -9,6 +9,7 @@ A small parametric CAD / SDF modeller that runs in the browser.
 - **splines** — 3D tube paths, extruded profiles and lathe profiles, with a point editor
 - **parameters** — constants become sliders, toggles and colour pickers
 - **WebGL2 raymarcher** — soft shadows, ambient occlusion, materials, ground grid
+- **smoothness analysis** — normals, mean curvature, gradient and zebra views, plus curvature combs
 - **renders on demand** — idle costs nothing; interactive frames are drafted and refined
 - **Monaco** — javascript editing with DSL typings, completions and a generated GLSL tab
 
@@ -43,6 +44,32 @@ solo reset when you reopen a project.
 
 The editor/viewport split is draggable (double click resets it, arrow keys work
 when the splitter is focused) and the position is remembered in `localStorage`.
+
+## Spline workspace
+
+The spline editor's position is controlled from the **top bar** (`splines` group
+next to the compile status):
+
+- **dock** — the compact panel at the bottom right (default).
+- **editor pane** — the spline workspace takes the place of the code editor; the
+  code/Monaco state is kept and restored when you bring it back.
+- **viewport** — the spline workspace replaces the scene renderer. The main
+  raymarcher is paused (no GPU work) and resumes exactly where it left off.
+
+The workspace header has a `×` shortcut back to the dock. While it is enlarged,
+the dock shows a small placeholder with a `restore` action.
+
+The workspace shows the 2D control-point editor next to a **live 3D preview**
+(`2D / split / 3D`), rendered by the same SDF raymarcher as the main scene: the
+swept tube (or lathe/extrude solid), the control cage and the handles, with
+orbit/zoom, framing, shadows, AO and the ground grid. Drag a control point in 2D
+and the 3D preview follows immediately; the camera reframes only when you switch
+splines. The workspace shares the comb toggle and the XY/XZ/YZ projection with
+the dock. The 2D canvas supports **pan** (drag empty space, or middle/right drag)
+and **wheel zoom** around the cursor, with a fit button in the corner; the view is
+kept while you drag points and refits when you switch splines or resize. The comb
+toggle also draws **3D curvature combs** in the preview (spikes plus an envelope),
+so it remains useful in the `3D` view.
 
 ## Projects
 
@@ -257,6 +284,41 @@ or dragging a spline control point does **not** recompile the shader — the
 structure is unchanged. Structural edits (adding children, toggling a shape)
 do.
 
+## Smoothness analysis
+
+The viewport has a `shaded / normals / curvature / gradient / zebra` selector:
+
+- **normals** — world-space normal encoded as RGB (R = +x, G = +y, B = +z).
+- **curvature** — mean curvature `H ≈ ½Δd` sampled from the distance field, colour
+  coded from concave (cool) through flat (neutral) to convex (warm), with a
+  colour bar and a κ full-scale slider. Useful for finding tight fillets, creases
+  and weak blends.
+- **gradient** — `|∇d|` of the field. A true distance field stays at 1; colour
+  deviations expose non-metric fields or missing `normalize`.
+- **zebra** — reflected environment stripes. Continuous bands reveal G1/G2
+  smoothness across blends, unions and patches.
+
+Analysis views hide the ground grid and never bake themselves into project
+previews. The mode (and the curvature scale) is saved with the project.
+
+**Curvature combs** — the splines dock header (and the enlarged spline
+workspace) has a `comb` toggle next to the XY/XZ/YZ selector. It samples the curve,
+fits a circle through each triple of neighbouring points and draws a spike away
+from the local centre of curvature with length proportional to `κ = 1/R`,
+plus an envelope through the tips. The readout shows `κmax` in world units. It
+works for 3D path splines (projected onto the chosen plane) and for lathe /
+extrude profiles, and in the spline workspace it is also rendered as 3D spikes
+(with an envelope) in the live preview.
+
+Enabling the comb reveals two sliders (both in the dock and in the workspace
+header):
+
+- **density** (8–120) — number of spikes along the curve; the comb is re-sampled
+  at a higher resolution so it can exceed the drawing resolution.
+- **scale** (×0.2–3) — spike length multiplier.
+
+Both sliders drive the 2D and 3D combs together.
+
 ## Performance
 
 The viewport only draws when something actually changes:
@@ -326,7 +388,8 @@ as one small GLSL function per node returning `vec2(distance, material)`:
 src/core      pure pipeline: dsl, scene types, expression parser, codegen, bounds
 src/render    WebGL2 renderer + the raymarching glsl prelude
 src/store     project records, IndexedDB persistence, starter scene
-src/ui        landing page, editor shell, Monaco, viewport, param + spline docks
+src/ui        landing, editor shell, Monaco, viewport, component tree,
+              spline workspace + live 3D preview, parameter/spline docks
 public        pre-rendered example stills
 scripts       headless checks (npm run check)
 ```

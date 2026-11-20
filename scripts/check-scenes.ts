@@ -5,7 +5,7 @@
 import { compileScene } from '../src/core/compile';
 import { PRESETS } from '../src/core/presets';
 import { compileExpression } from '../src/core/expr';
-import { sampleSpline } from '../src/core/spline';
+import { curvatureCombs, sampleSpline } from '../src/core/spline';
 import { normalizeHexColor } from '../src/core/math';
 
 let failures = 0;
@@ -117,6 +117,19 @@ try {
 } catch (e) {
   ok(/unknown identifier/.test((e as Error).message), 'unknown identifier rejected');
 }
+
+console.log('\ncurvature comb');
+const circle = Array.from({ length: 48 }, (_, i) => [
+  Math.cos((i / 48) * Math.PI * 2) * 2,
+  Math.sin((i / 48) * Math.PI * 2) * 2,
+]);
+const combs = curvatureCombs(circle, true, 1);
+ok(combs.spikes.length === 48, 'one spike per sample');
+ok(Math.abs(combs.maxK - 0.5) < 1e-3, 'circle curvature is 1/R');
+ok(
+  combs.spikes.every((s) => s.point[0] * s.dir[0] + s.point[1] * s.dir[1] > 0),
+  'spikes point outward',
+);
 
 console.log('\ncolours');
 ok(normalizeHexColor('#abc') === '#aabbcc', 'short hex expands');

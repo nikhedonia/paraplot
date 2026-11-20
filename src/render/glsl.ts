@@ -39,6 +39,9 @@ uniform vec3  u_boxMax;
 uniform float u_shadows;
 uniform float u_ao;
 uniform float u_grid;
+uniform int   u_view;
+uniform float u_curvEps;
+uniform float u_curvScale;
 uniform float u_floorY;
 uniform vec3  u_bgA;
 uniform vec3  u_bgB;
@@ -253,6 +256,50 @@ vec3 shade(vec3 p, vec3 n, vec3 rd, int mat, float t) {
   return col;
 }
 
+/* ------------- smoothness analysis ------------- */
+float meanCurvatureAt(vec3 p) {
+  float e = u_curvEps;
+  float d0 = map(p).x;
+  float lap = (
+    map(p + vec3(e, 0.0, 0.0)).x + map(p - vec3(e, 0.0, 0.0)).x +
+    map(p + vec3(0.0, e, 0.0)).x + map(p - vec3(0.0, e, 0.0)).x +
+    map(p + vec3(0.0, 0.0, e)).x + map(p - vec3(0.0, 0.0, e)).x
+    - 6.0 * d0
+  ) / (e * e);
+  float h = 0.5 * lap;
+  return (isnan(h) || isinf(h)) ? 0.0 : h;
+}
+
+float gradientLengthAt(vec3 p) {
+  float e = u_curvEps;
+  vec3 g = vec3(
+    map(p + vec3(e, 0.0, 0.0)).x - map(p - vec3(e, 0.0, 0.0)).x,
+    map(p + vec3(0.0, e, 0.0)).x - map(p - vec3(0.0, e, 0.0)).x,
+    map(p + vec3(0.0, 0.0, e)).x - map(p - vec3(0.0, 0.0, e)).x
+  );
+  float len = length(g) / (2.0 * e);
+  return (isnan(len) || isinf(len)) ? 1.0 : len;
+}
+
+vec3 toLinear(vec3 c) { return pow(max(c, 0.0), vec3(2.2)); }
+
+vec3 analysisRamp(float t) {
+  vec3 mid = vec3(0.33, 0.35, 0.37);
+  vec3 cold = vec3(0.20, 0.45, 0.85);
+  vec3 warm = vec3(0.95, 0.55, 0.26);
+  vec3 c = t < 0.0
+    ? mix(mid, cold, clamp(-t, 0.0, 1.0))
+    : mix(mid, warm, clamp(t, 0.0, 1.0));
+  return toLinear(c);
+}
+
+vec3 zebraColor(vec3 n, vec3 rd) {
+  vec3 r = reflect(rd, n);
+  float lat = atan(r.y, length(r.xz));
+  float stripe = smoothstep(-0.08, 0.08, sin(lat * 20.0));
+  return toLinear(mix(vec3(0.07, 0.08, 0.10), vec3(0.92, 0.93, 0.90), stripe));
+}
+
 float gridLines(vec2 p, float spacing) {
   vec2 q = p / spacing;
   vec2 g = abs(fract(q - 0.5) - 0.5) / max(fwidth(q), vec2(1e-6));
@@ -287,10 +334,25 @@ void main() {
     vec3 p = ro + rd * th;
     vec3 n = calcNormal(p);
     int mat = int(round(map(p).y));
-    col = shade(p, n, rd, mat, th);
+
+    if (u_view == 1) {
+      col = toLinear(n * 0.5 + 0.5);
+    } else if (u_view == 2) {
+      float h = meanCurvatureAt(p);
+      float t = clamp(h / max(u_curvScale, 0.001), -1.0, 1.0);
+      col = analysisRamp(t);
+    } else if (u_view == 3) {
+      col = zebraColor(n, rd);
+    } else if (u_view == 4) {
+      float g = gradientLengthAt(p);
+      float t = clamp((g - 1.0) * 2.0, -1.0, 1.0);
+      col = analysisRamp(t);
+    } else {
+      col = shade(p, n, rd, mat, th);
+    }
   }
 
-  if (u_grid > 0.5 && abs(rd.y) > 1e-5) {
+  if (u_view == 0 && u_grid > 0.5 && abs(rd.y) > 1e-5) {
     float tp = (u_floorY - ro.y) / rd.y;
     if (tp > 0.0 && (th < 0.0 || tp < th)) {
       vec3 gp = ro + rd * tp;
@@ -300,8 +362,11 @@ void main() {
     }
   }
 
-  col *= 1.0 - 0.28 * dot(uv * 0.95, uv * 0.95);
-  col = col / (col + vec3(1.0));
+  if (u_view == 0) {
+    // filmic curve only for the shaded view; analysis colours are exact
+    col *= 1.0 - 0.28 * dot(uv * 0.95, uv * 0.95);
+    col = col / (col + vec3(1.0));
+  }
   col = pow(max(col, 0.0), vec3(1.0 / 2.2));
   col += (hash12(gl_FragCoord.xy) - 0.5) / 255.0;
 

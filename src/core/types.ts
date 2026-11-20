@@ -22,6 +22,11 @@ export interface SplineInfo {
   dim: 2 | 3;
   points: number[][];
   closed: boolean;
+  /** shape parameters, used by the 3D spline preview */
+  r?: number;
+  h?: number;
+  round?: number;
+  seg?: number;
 }
 
 export interface Material {

@@ -19,7 +19,12 @@ import { CodeEditor } from './CodeEditor';
 import { ComponentTree } from './ComponentTree';
 import { Icon } from './Icon';
 import { ParamPanel } from './ParamPanel';
-import { SplineEditor } from './SplineEditor';
+import { SplineEditor, type SplinePlane } from './SplineEditor';
+import {
+  SplineWorkspace,
+  type SplinePlacement,
+  type SplineViewMode,
+} from './SplineWorkspace';
 import { Viewport } from './Viewport';
 
 type Tab = 'tree' | 'scene' | 'shader';
@@ -67,7 +72,16 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
   const [paramValues, setParamValues] = useState<ParamValues>(initial.params ?? {});
   const [overrides, setOverrides] = useState<Record<string, number[][]>>(initial.overrides ?? {});
   const [selectedSpline, setSelectedSpline] = useState<string | null>(null);
-  const [settings, setSettings] = useState<RenderSettings>(initial.settings ?? DEFAULT_SETTINGS);
+  const [splinePlacement, setSplinePlacement] = useState<SplinePlacement>('dock');
+  const [splineView, setSplineView] = useState<SplineViewMode>('split');
+  const [comb, setComb] = useState(false);
+  const [combDensity, setCombDensity] = useState(40);
+  const [combScale, setCombScale] = useState(1);
+  const [splinePlane, setSplinePlane] = useState<SplinePlane>('XY');
+  const [settings, setSettings] = useState<RenderSettings>({
+    ...DEFAULT_SETTINGS,
+    ...(initial.settings ?? {}),
+  });
   const [tab, setTab] = useState<Tab>('scene');
   const [playing, setPlaying] = useState(true);
   const [renderError, setRenderError] = useState<string | null>(null);
@@ -201,8 +215,11 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
 
   const captureRef = useRef<(() => Promise<string | null>) | null>(null);
   const capture = useCallback(async (): Promise<string | null> => {
-    // filters are a viewing aid: never bake them into the project preview
-    if (hidden.size > 0 || isolated) return null;
+    // filters and analysis views are aids: never bake them into the preview;
+    // when the spline workspace covers the viewport there is nothing to capture
+    if (hidden.size > 0 || isolated || settings.view !== 'shaded' || splinePlacement === 'viewport') {
+      return null;
+    }
     const fn = captureRef.current;
     if (!fn) return null;
     try {
@@ -213,7 +230,7 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
     } catch {
       return null;
     }
-  }, [hidden, isolated]);
+  }, [hidden, isolated, settings.view, splinePlacement]);
 
   const persist = useCallback(async (extra?: { thumbnail?: string }) => {
     const record: ProjectRecord = {
@@ -318,6 +335,18 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
     setFrameSignal((n) => n + 1);
   }, []);
 
+  const setSplinePoints = useCallback((id: string, points: number[][]) => {
+    setOverrides((o) => ({ ...o, [id]: points }));
+  }, []);
+
+  const resetSpline = useCallback((id: string) => {
+    setOverrides((o) => {
+      const next = { ...o };
+      delete next[id];
+      return next;
+    });
+  }, []);
+
   const filterLabel = useMemo(() => {
     const parts: string[] = [];
     if (isolated && tree) {
@@ -385,6 +414,28 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
           : 'save failed';
   const everythingHidden = hidden.size > 0 && !displayProgram;
 
+  const renderSplineWorkspace = (placement: 'editor' | 'viewport') => (
+    <SplineWorkspace
+      splines={fullProgram?.splines ?? []}
+      selected={selectedSpline}
+      comb={comb}
+      combDensity={combDensity}
+      combScale={combScale}
+      onCombDensity={setCombDensity}
+      onCombScale={setCombScale}
+      plane={splinePlane}
+      view={splineView}
+      placement={placement}
+      onSelect={setSelectedSpline}
+      onPoints={setSplinePoints}
+      onReset={resetSpline}
+      onComb={setComb}
+      onPlane={setSplinePlane}
+      onView={setSplineView}
+      onClose={() => setSplinePlacement('dock')}
+    />
+  );
+
   return (
     <div className="app">
       <header className="topbar">
@@ -419,6 +470,36 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
 
         <div className="topgap" />
 
+        <div className="topseg" role="group" aria-label="Spline editor position">
+          <span className="topseg-label">splines</span>
+          <div className="segmented small">
+            <button
+              className={splinePlacement === 'dock' ? 'active' : ''}
+              onClick={() => setSplinePlacement('dock')}
+              title="Spline editor in the dock"
+              aria-pressed={splinePlacement === 'dock'}
+            >
+              <Icon name="panelBottom" size={12} />
+            </button>
+            <button
+              className={splinePlacement === 'editor' ? 'active' : ''}
+              onClick={() => setSplinePlacement('editor')}
+              title="Spline editor in the editor pane"
+              aria-pressed={splinePlacement === 'editor'}
+            >
+              <Icon name="panelLeft" size={12} />
+            </button>
+            <button
+              className={splinePlacement === 'viewport' ? 'active' : ''}
+              onClick={() => setSplinePlacement('viewport')}
+              title="Spline editor in place of the viewport"
+              aria-pressed={splinePlacement === 'viewport'}
+            >
+              <Icon name="panelRight" size={12} />
+            </button>
+          </div>
+        </div>
+
         <div className={`status ${compiled.ok ? 'ok' : 'bad'}`}>
           <span className="dot" />
           {compiled.ok ? 'compiled' : 'error'}
@@ -442,6 +523,7 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
         style={{ ['--split' as string]: `${split}%` }}
       >
         <section className="pane editor-pane">
+          <div className={`editor-shell ${splinePlacement === 'editor' ? 'is-hidden' : ''}`}>
           <div className="tabs">
             <button
               className={`tab ${tab === 'tree' ? 'active' : ''}`}
@@ -490,14 +572,19 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
             </div>
 
             <div className={`editor-layer ${tab === 'scene' ? 'visible' : ''}`}>
-              <CodeEditor value={source} onChange={setSource} active={tab === 'scene'} path="scene.js" />
+              <CodeEditor
+                value={source}
+                onChange={setSource}
+                active={tab === 'scene' && splinePlacement !== 'editor'}
+                path="scene.js"
+              />
             </div>
             <div className={`editor-layer ${tab === 'shader' ? 'visible' : ''}`}>
               <CodeEditor
                 value={displayProgram?.glsl ?? '// compile a scene to see the generated shader'}
                 readOnly
                 language="cpp"
-                active={tab === 'shader'}
+                active={tab === 'shader' && splinePlacement !== 'editor'}
                 path="shader.glsl"
               />
             </div>
@@ -522,6 +609,9 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
               {compiled.ok ? 'scene is valid' : 'scene has errors'}
             </span>
           </div>
+          </div>
+
+          {splinePlacement === 'editor' && renderSplineWorkspace('editor')}
 
           {!compiled.ok && (
             <div className="errorbar">
@@ -556,6 +646,7 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
         />
 
         <section className="pane view-pane">
+          <div className="viewport-slot">
           <Viewport
             program={displayProgram}
             settings={settings}
@@ -570,7 +661,10 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
             filterLabel={filterLabel}
             onClearFilter={clearFilters}
             emptyLabel={everythingHidden ? 'Everything is hidden — clear the filters to see the scene.' : null}
+            hasSplines={(fullProgram?.splines.length ?? 0) > 0}
+            paused={splinePlacement === 'viewport'}
           />
+          {splinePlacement === 'viewport' && renderSplineWorkspace('viewport')}
           {renderError && (
             <div className="render-error">
               <strong>renderer</strong>
@@ -578,6 +672,7 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
               <button onClick={() => setRenderError(null)}>dismiss</button>
             </div>
           )}
+          </div>
           <div className="dock">
             <ParamPanel
               schema={compiled.ok ? compiled.schema : schema}
@@ -585,19 +680,41 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
               onChange={setParamValues}
               onReset={() => setParamValues({})}
             />
-            <SplineEditor
-              splines={fullProgram?.splines ?? []}
-              selected={selectedSpline}
-              onSelect={setSelectedSpline}
-              onChange={(id, points) => setOverrides((o) => ({ ...o, [id]: points }))}
-              onReset={(id) =>
-                setOverrides((o) => {
-                  const next = { ...o };
-                  delete next[id];
-                  return next;
-                })
-              }
-            />
+            {splinePlacement === 'dock' ? (
+              <SplineEditor
+                splines={fullProgram?.splines ?? []}
+                selected={selectedSpline}
+                onSelect={setSelectedSpline}
+                onChange={setSplinePoints}
+                onReset={resetSpline}
+                comb={comb}
+                onComb={setComb}
+                combDensity={combDensity}
+                combScale={combScale}
+                onCombDensity={setCombDensity}
+                onCombScale={setCombScale}
+                plane={splinePlane}
+                onPlane={setSplinePlane}
+              />
+            ) : (
+              <div className="dock-panel splines dock-detached">
+                <header className="dock-head">
+                  <span className="dock-title">splines</span>
+                  <span className="dock-count">{fullProgram?.splines.length ?? 0}</span>
+                  <button
+                    className="ghostbtn"
+                    onClick={() => setSplinePlacement('dock')}
+                    title="Bring the spline editor back to the dock"
+                  >
+                    <Icon name="reset" size={12} /> restore
+                  </button>
+                </header>
+                <div className="dock-empty">
+                  The spline workspace is open in the{' '}
+                  {splinePlacement === 'editor' ? 'editor pane' : 'viewport'}.
+                </div>
+              </div>
+            )}
           </div>
         </section>
       </main>
@@ -627,7 +744,12 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
             </div>
             <p className="modal-note">
               Name a group to label it in the tree:{' '}
-              <code>{'group({ name: "wheel", t: … }, …)'}</code>.
+              <code>{'group({ name: "wheel", t: … }, …)'}</code>. Analyse surfaces with the
+              shaded / normals / curvature / gradient / zebra selector in the viewport; curvature
+              combs are toggled in the splines dock header. Use the `splines` buttons in the top
+              bar to place the spline editor in the dock, the editor pane or the viewport; the
+              enlarged workspace includes a live 3D preview, 2D pan/zoom and 3D combs; the
+              comb's density and scale sliders appear when it is enabled.
               Implicit equations use a small expression language: <code>x</code>, <code>y</code>,{' '}
               <code>z</code>, <code>p</code>, <code>time</code>, and functions like <code>sin</code>,{' '}
               <code>abs</code>, <code>length</code>, <code>clamp</code>. To animate the scene graph,

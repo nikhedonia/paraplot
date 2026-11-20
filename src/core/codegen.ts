@@ -269,6 +269,9 @@ export function collectSplines(root: Node): SplineInfo[] {
         dim: n.kind === 'spline' ? 3 : 2,
         points: n.points.map((p) => [...p]),
         closed: n.closed,
+        seg: n.seg,
+        ...(n.kind === 'spline' ? { r: n.r } : null),
+        ...(n.kind === 'extrude' ? { h: n.h, round: n.round } : null),
       });
       return;
     }

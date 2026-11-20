@@ -3,7 +3,7 @@ import type { MutableRefObject } from 'react';
 import type { CompiledProgram } from '../core/codegen';
 import type { Aabb } from '../core/types';
 import { type CameraState, defaultCamera, cameraPosition } from '../render/renderer';
-import type { RenderSettings } from '../render/settings';
+import type { RenderSettings, ViewMode } from '../render/settings';
 import {
   createBackend,
   type FrameInfo,
@@ -36,6 +36,10 @@ export interface ViewportProps {
   onClearFilter?: () => void;
   /** message shown when there is nothing to render */
   emptyLabel?: string | null;
+  /** show a pointer to the spline curvature combs in curvature mode */
+  hasSplines?: boolean;
+  /** stop drawing while another surface covers the viewport */
+  paused?: boolean;
 }
 
 interface Size {
@@ -71,6 +75,8 @@ export function Viewport({
   filterLabel = null,
   onClearFilter,
   emptyLabel = null,
+  hasSplines = false,
+  paused = false,
 }: ViewportProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -97,6 +103,8 @@ export function Viewport({
   const interactingRef = useRef(false);
   const lastTapRef = useRef(0);
   const wakeRef = useRef<() => void>(() => {});
+  const pausedRef = useRef(paused);
+  pausedRef.current = paused;
   const [stats, setStats] = useState({
     fps: 0,
     w: 0,
@@ -268,6 +276,7 @@ export function Viewport({
     function tick(now: number) {
       if (!backend) return;
       raf = 0;
+      if (pausedRef.current) return;
       const live = isLive();
       const delta = Math.max(0, Math.min(0.25, (now - last) / 1000));
       last = now;
@@ -425,6 +434,10 @@ export function Viewport({
     wakeRef.current();
   }, [settings, playing, animated]);
 
+  useEffect(() => {
+    if (!paused) wakeRef.current();
+  }, [paused]);
+
   /* ---- interaction ---- */
   useEffect(() => {
     const host = hostRef.current;
@@ -544,9 +557,10 @@ export function Viewport({
     0,
     QUALITY.findIndex((q) => q.scale === settings.scale),
   );
+  const view: ViewMode = settings.view ?? 'shaded';
 
   return (
-    <div className="viewport" ref={hostRef}>
+    <div className={`viewport ${view !== 'shaded' ? 'analysis-on' : ''}`} ref={hostRef} data-view={view}>
       <div className="hud hud-tl">
         <div
           className={`chip ${stats.live ? '' : 'dim'}`}
@@ -567,10 +581,23 @@ export function Viewport({
             {filterLabel} <span aria-hidden="true">×</span>
           </button>
         )}
-        <div className="chip dim">sdf · {stats.renderer}</div>
+        <div className="chip dim modechip">sdf · {stats.renderer}</div>
       </div>
 
       <div className="hud hud-tr">
+        <select
+          className="hud-select"
+          value={view}
+          onChange={(e) => onSettings({ ...settings, view: e.target.value as ViewMode })}
+          title="Surface analysis"
+          aria-label="Surface analysis mode"
+        >
+          <option value="shaded">shaded</option>
+          <option value="normals">normals</option>
+          <option value="curvature">curvature</option>
+          <option value="gradient">gradient</option>
+          <option value="zebra">zebra</option>
+        </select>
         {(animated || program?.usesTime) && (
           <button
             className={`iconbtn ${playing ? 'on' : ''}`}
@@ -588,8 +615,9 @@ export function Viewport({
           <Icon name="frame" />
         </button>
         <button
-          className={`iconbtn ${settings.grid ? 'on' : ''}`}
-          title="Ground grid"
+          className={`iconbtn ${settings.grid && view === 'shaded' ? 'on' : ''}`}
+          title={view === 'shaded' ? 'Ground grid' : 'Ground grid is hidden in analysis views'}
+          disabled={view !== 'shaded'}
           onClick={() => onSettings({ ...settings, grid: !settings.grid })}
         >
           <Icon name="grid" />
@@ -625,6 +653,80 @@ export function Viewport({
       <div className="hud hud-bl">
         <span>drag</span> orbit · <span>shift+drag</span> pan · <span>wheel</span> zoom
       </div>
+
+      {view !== 'shaded' && (
+        <div className="hud hud-br analysis-panel">
+          <div className="analysis-head">
+            <span className="analysis-title">
+              {view === 'normals'
+                ? 'surface normals'
+                : view === 'curvature'
+                  ? 'mean curvature'
+                  : view === 'gradient'
+                    ? 'gradient |∇d|'
+                    : 'zebra stripes'}
+            </span>
+            {view === 'curvature' && (
+              <span className="analysis-value">±{settings.curvatureScale.toFixed(1)}</span>
+            )}
+          </div>
+
+          {(view === 'curvature' || view === 'gradient') && (
+            <>
+              <div className={`analysis-bar ${view}`} />
+              <div className="analysis-labels">
+                {view === 'curvature' ? (
+                  <>
+                    <span>concave</span>
+                    <span>flat</span>
+                    <span>convex</span>
+                  </>
+                ) : (
+                  <>
+                    <span>0.5</span>
+                    <span>1.0</span>
+                    <span>1.5</span>
+                  </>
+                )}
+              </div>
+            </>
+          )}
+
+          {view === 'curvature' && (
+            <label className="analysis-slider" title="Mean curvature mapped to full colour">
+              <span>κ</span>
+              <input
+                type="range"
+                min={0.5}
+                max={20}
+                step={0.1}
+                value={settings.curvatureScale}
+                onChange={(e) =>
+                  onSettings({ ...settings, curvatureScale: Number.parseFloat(e.target.value) })
+                }
+              />
+            </label>
+          )}
+
+          {view === 'curvature' && hasSplines && (
+            <div className="analysis-note">combs: splines dock → comb</div>
+          )}
+
+          {view === 'normals' && (
+            <div className="analysis-note">
+              <span className="axis-x">R +x</span>
+              <span className="axis-y">G +y</span>
+              <span className="axis-z">B +z</span>
+            </div>
+          )}
+
+          {view === 'zebra' && (
+            <div className="analysis-note">
+              reflected stripes — smooth surfaces keep the bands continuous
+            </div>
+          )}
+        </div>
+      )}
 
       {(webglError || !program) && (
         <div className="viewport-error">{webglError ?? emptyLabel ?? 'Compiling scene…'}</div>

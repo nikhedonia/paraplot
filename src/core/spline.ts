@@ -56,3 +56,50 @@ export function sampleProfile(points: P[], closed: boolean, perSegment: number):
   if (closed && out.length > 1) out.pop();
   return out;
 }
+
+export interface CurvatureSpike {
+  /** point on the curve (2d) */
+  point: [number, number];
+  /** outward unit direction (away from the centre of curvature) */
+  dir: [number, number];
+  /** signed curvature magnitude, 1 / radius */
+  k: number;
+}
+
+/**
+ * Discrete curvature combs for a planar polyline. Spikes point away from the
+ * local centre of curvature; nearly straight spans produce no spike.
+ */
+export function curvatureCombs(
+  points: number[][],
+  closed: boolean,
+  step = 1,
+): { spikes: CurvatureSpike[]; maxK: number } {
+  const n = points.length;
+  if (n < 3) return { spikes: [], maxK: 0 };
+  const at = (i: number): number[] =>
+    points[closed ? ((i % n) + n) % n : Math.max(0, Math.min(n - 1, i))];
+
+  const spikes: CurvatureSpike[] = [];
+  const stride = Math.max(1, Math.floor(step));
+  for (let i = 0; i < n; i += stride) {
+    if (!closed && (i === 0 || i === n - 1)) continue;
+    const a = at(i - 1);
+    const b = at(i);
+    const c = at(i + 1);
+    const d = 2 * (a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1]));
+    if (Math.abs(d) < 1e-12) continue;
+    const a2 = a[0] * a[0] + a[1] * a[1];
+    const b2 = b[0] * b[0] + b[1] * b[1];
+    const c2 = c[0] * c[0] + c[1] * c[1];
+    const cx = (a2 * (b[1] - c[1]) + b2 * (c[1] - a[1]) + c2 * (a[1] - b[1])) / d;
+    const cy = (a2 * (c[0] - b[0]) + b2 * (a[0] - c[0]) + c2 * (b[0] - a[0])) / d;
+    const dx = b[0] - cx;
+    const dy = b[1] - cy;
+    const r = Math.hypot(dx, dy);
+    if (!Number.isFinite(r) || r < 1e-9) continue;
+    spikes.push({ point: [b[0], b[1]], dir: [dx / r, dy / r], k: 1 / r });
+  }
+  const maxK = spikes.reduce((m, s) => Math.max(m, s.k), 0);
+  return { spikes, maxK };
+}
