@@ -88,6 +88,14 @@ function Row({
           {node.label}
         </span>
         {node.detail && <span className="tree-detail">{node.detail}</span>}
+        {node.shared && (
+          <span
+            className="tree-shared"
+            title={`Shared node — instanced ${node.shared} times`}
+          >
+            ×{node.shared}
+          </span>
+        )}
         <span className="tree-actions">
           <button
             className={`tree-act ${isSolo ? 'on' : ''}`}

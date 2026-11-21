@@ -1,6 +1,7 @@
 import type { Material, Node, OpKind, Vec3, Aabb, SplineInfo } from './types';
 import { sampleProfile, sampleSpline } from './spline';
 import { compileExpression } from './expr';
+import { resolveSplinePointRefs } from './splineRefs';
 import { boundsOf } from './bounds';
 import { fragmentShader } from '../render/glsl';
 
@@ -24,13 +25,19 @@ const DEFAULT_MATERIAL: Material = { color: [0.24, 0.26, 0.29], rough: 0.55 };
 class Gen {
   private values: number[] = [];
   private materials: Material[] = [DEFAULT_MATERIAL];
+  /** identical paint nodes share one material slot */
+  private materialIndex = new Map<string, number>();
   private fns: string[] = [];
+  /** nodes are emitted once per identity, so reused subgraphs share code/uniforms */
+  private emitted = new Map<Node, string>();
   private id = 0;
   private nodes = 0;
   private usesTime = false;
 
   generate(root: Node): CompiledProgram {
-    const entry = this.emit(root);
+    // point references are resolved after spline overrides, before codegen
+    const scene = resolveSplinePointRefs(root);
+    const entry = this.emit(scene);
 
     const mapFn = `/* ${this.nodes} nodes, ${this.values.length} parameters */
 ${this.fns.join('\n')}
@@ -44,12 +51,12 @@ vec2 map(vec3 p) { return ${entry}(p); }
     });
 
     return {
-      scene: root,
+      scene,
       glsl,
       values: new Float32Array(this.values),
-      bounds: boundsOf(root),
+      bounds: boundsOf(scene),
       materials: this.materials.map((m) => ({ ...m, color: [...m.color] as Vec3 })),
-      splines: collectSplines(root),
+      splines: collectSplines(scene),
       usesTime: this.usesTime,
       stats: {
         nodes: this.nodes,
@@ -61,11 +68,6 @@ vec2 map(vec3 p) { return ${entry}(p); }
   }
 
   /* ---------------- emitters ---------------- */
-
-  private pushFn(name: string, body: string) {
-    this.fns.push(body);
-    return name;
-  }
 
   private f(x: number): string {
     const i = this.values.length;
@@ -86,10 +88,13 @@ vec2 map(vec3 p) { return ${entry}(p); }
   }
 
   private emit(node: Node): string {
+    const cached = this.emitted.get(node);
+    if (cached) return cached;
     this.nodes++;
     const name = `n${this.id++}`;
-    const body = this.body(node, name);
-    return this.pushFn(name, body);
+    this.fns.push(this.body(node, name));
+    this.emitted.set(node, name);
+    return name;
   }
 
   private body(node: Node, name: string): string {
@@ -210,8 +215,13 @@ ${sig} {
 
       case 'paint': {
         const child = this.emit(node.child);
-        const idx = this.materials.length;
-        this.materials.push({ color: [...node.color] as Vec3, rough: node.rough });
+        const key = `${node.color[0]},${node.color[1]},${node.color[2]},${node.rough}`;
+        let idx = this.materialIndex.get(key);
+        if (idx === undefined) {
+          idx = this.materials.length;
+          this.materials.push({ color: [...node.color] as Vec3, rough: node.rough });
+          this.materialIndex.set(key, idx);
+        }
         return `${sig} { vec2 r = ${child}(p); return vec2(r.x, ${idx}.0); }`;
       }
     }
@@ -258,9 +268,13 @@ export function generate(root: Node): CompiledProgram {
 
 export function collectSplines(root: Node): SplineInfo[] {
   const out: SplineInfo[] = [];
+  // a spline node reused under several transforms is one editable spline
+  const seen = new Set<Node>();
   let index = 0;
   const walk = (n: Node) => {
     if (n.kind === 'spline' || n.kind === 'extrude' || n.kind === 'lathe') {
+      if (seen.has(n)) return;
+      seen.add(n);
       const i = index++;
       out.push({
         id: n.name ?? `#${i}`,
@@ -282,31 +296,68 @@ export function collectSplines(root: Node): SplineInfo[] {
   return out;
 }
 
+/**
+ * Apply per-point offsets to spline control points. Using offsets (not absolute
+ * points) keeps time-dependent splines animating around the edited shape.
+ */
 export function applySplineOverrides(root: Node, overrides: Record<string, number[][]>): Node {
   if (!overrides || Object.keys(overrides).length === 0) return root;
+  const ids = new WeakMap<Node, string>();
+  // structural sharing: one replacement per original node, so shared subtrees
+  // stay shared (and keep producing identical shader text while editing)
+  const replaced = new Map<Node, Node>();
   let index = 0;
+  const idFor = (n: Node): string => {
+    const existing = ids.get(n);
+    if (existing) return existing;
+    const i = index++;
+    const id = (n as { name?: string }).name ?? `#${i}`;
+    ids.set(n, id);
+    return id;
+  };
   const walk = (n: Node): Node => {
+    const cached = replaced.get(n);
+    if (cached) return cached;
+
     if (n.kind === 'spline' || n.kind === 'extrude' || n.kind === 'lathe') {
-      const i = index++;
-      const id = n.name ?? `#${i}`;
+      const id = idFor(n);
       const ov = overrides[id];
       const dim = n.kind === 'spline' ? 3 : 2;
       if (
         ov &&
         Array.isArray(ov) &&
-        ov.length >= 3 &&
+        ov.length === n.points.length &&
         ov.every((p) => Array.isArray(p) && p.length === dim && p.every(Number.isFinite))
       ) {
-        return { ...n, points: ov.map((p) => [...p]) } as Node;
+        const points = n.points.map((p, i) => p.map((v, k) => v + ov[i][k]));
+        const copy = { ...n, points } as Node;
+        replaced.set(n, copy);
+        return copy;
       }
       return n;
     }
+
     if (n.kind === 'op' || n.kind === 'group') {
-      return { ...n, children: n.children.map(walk) };
+      let changed = false;
+      const children = n.children.map((child) => {
+        const next = walk(child);
+        if (next !== child) changed = true;
+        return next;
+      });
+      if (!changed) return n;
+      const next = { ...n, children };
+      replaced.set(n, next);
+      return next;
     }
+
     if (n.kind === 'offset' || n.kind === 'shell' || n.kind === 'paint') {
-      return { ...n, child: walk(n.child) };
+      const child = walk(n.child);
+      if (child === n.child) return n;
+      const next = { ...n, child };
+      replaced.set(n, next);
+      return next;
     }
+
     return n;
   };
   return walk(root);

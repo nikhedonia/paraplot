@@ -19,6 +19,23 @@ type Vec3 = [number, number, number];
 interface Solid {
   readonly kind: string;
 }
+
+/**
+ * An opaque point on a spline, created by spline(...).at(t).
+ * Pass it to capsule endpoints or translate(); it is resolved by the
+ * compiler after spline overrides, so anchored parts follow curve edits.
+ */
+interface SplinePoint {
+  readonly __splinePoint: true;
+}
+
+/** A spline-like solid with a point accessor. */
+interface SplineSolid extends Solid {
+  /** Point at t in [0,1]. The spline must have a name. */
+  at(t: number): SplinePoint;
+}
+
+type Point3 = Vec3 | SplinePoint;
 type SolidInput = Solid | Solid[] | null | undefined | false;
 
 interface NumberOpts {
@@ -53,8 +70,8 @@ declare function vec3(value: Vec3, opts?: Vec3Opts): Vec3;
 interface Xform {
   /** label shown in the component tree */
   name?: string;
-  /** translation */
-  t?: Vec3 | number;
+  /** translation, or a spline point reference */
+  t?: Point3 | number;
   /** euler rotation in degrees, applied X then Y then Z */
   r?: Vec3 | number;
   /** scale, uniform or per axis */
@@ -81,7 +98,7 @@ type OpKind =
  */
 declare function group(o: Xform, ...children: SolidInput[]): Solid;
 declare function group(...children: SolidInput[]): Solid;
-declare function translate(t: Vec3 | number, ...children: SolidInput[]): Solid;
+declare function translate(t: Point3 | number, ...children: SolidInput[]): Solid;
 declare function rotate(r: Vec3 | number, ...children: SolidInput[]): Solid;
 declare function scale(s: Vec3 | number, ...children: SolidInput[]): Solid;
 declare const transform: typeof group;
@@ -119,8 +136,8 @@ declare function torus(o?: { R?: number; r?: number }): Solid;
 declare function cylinder(o?: { r?: number; h?: number; round?: number }): Solid;
 /** Cone, apex on +y, base on -y. */
 declare function cone(o?: { r?: number; h?: number }): Solid;
-/** Capsule between two points. */
-declare function capsule(o?: { a?: Vec3; b?: Vec3; r?: number }): Solid;
+/** Capsule between two points (or spline point references). */
+declare function capsule(o?: { a?: Point3; b?: Point3; r?: number }): Solid;
 /** Half space: dot(p, n) + d < 0 is inside. */
 declare function plane(o?: { n?: Vec3; d?: number }): Solid;
 
@@ -159,11 +176,11 @@ interface SplineOpts {
   closed?: boolean;
   /** samples per span (default 10) */
   seg?: number;
-  /** stable id used by the spline editor */
+  /** stable id used by the spline editor; required for at(t) */
   name?: string;
 }
-/** A tube swept along a centripetal Catmull-Rom spline. */
-declare function spline(o: SplineOpts): Solid;
+/** A tube swept along a centripetal Catmull-Rom spline. Name it to use .at(t). */
+declare function spline(o: SplineOpts): SplineSolid;
 
 interface ExtrudeOpts {
   /** profile in the xy plane, [x, y] */
@@ -175,8 +192,8 @@ interface ExtrudeOpts {
   seg?: number;
   name?: string;
 }
-/** Extrude a closed profile along z. */
-declare function extrude(o: ExtrudeOpts): Solid;
+/** Extrude a closed profile along z. Name it to use .at(t). */
+declare function extrude(o: ExtrudeOpts): SplineSolid;
 
 interface LatheOpts {
   /** profile as [radius, y] pairs */
@@ -185,8 +202,8 @@ interface LatheOpts {
   seg?: number;
   name?: string;
 }
-/** Revolve a closed [radius, y] profile around the y axis. */
-declare function lathe(o: LatheOpts): Solid;
+/** Revolve a closed [radius, y] profile around the y axis. Name it to use .at(t). */
+declare function lathe(o: LatheOpts): SplineSolid;
 
 /* ---- numeric helpers ---- */
 

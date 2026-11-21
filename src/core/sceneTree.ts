@@ -9,6 +9,8 @@ export interface TreeNode {
   detail?: string;
   depth: number;
   children: TreeNode[];
+  /** number of instances when this exact node is reused by several parents */
+  shared?: number;
 }
 
 const seg = (node: Node, index: number): string => `${node.kind}${index}`;
@@ -131,14 +133,23 @@ export function childEntries(node: Node): Array<{ node: Node; index: number }> {
 }
 
 export function buildSceneTree(root: Node): TreeNode {
+  const counts = new Map<Node, number>();
+  const count = (node: Node) => {
+    counts.set(node, (counts.get(node) ?? 0) + 1);
+    childEntries(node).forEach(({ node: child }) => count(child));
+  };
+  count(root);
+
   const make = (node: Node, id: string, depth: number): TreeNode => {
     const desc = describeNode(node);
+    const used = counts.get(node) ?? 1;
     return {
       id,
       label: desc.label,
       detail: desc.detail,
       kind: node.kind,
       depth,
+      shared: used > 1 ? used : undefined,
       children: childEntries(node).map(({ node: child, index }) =>
         make(child, childId(id, child, index), depth + 1),
       ),

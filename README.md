@@ -64,7 +64,11 @@ The workspace shows the 2D control-point editor next to a **live 3D preview**
 swept tube (or lathe/extrude solid), the control cage and the handles, with
 orbit/zoom, framing, shadows, AO and the ground grid. Drag a control point in 2D
 and the 3D preview follows immediately; the camera reframes only when you switch
-splines. The workspace shares the comb toggle and the XY/XZ/YZ projection with
+splines. Spline edits are stored as **per-point offsets** from the generated curve. This
+matters for animated splines (like the dog's tail): your edit changes the rest
+shape while the animation keeps running around it.
+
+The workspace shares the comb toggle and the XY/XZ/YZ projection with
 the dock. The 2D canvas supports **pan** (drag empty space, or middle/right drag)
 and **wheel zoom** around the cursor, with a fit button in the corner; the view is
 kept while you drag points and refits when you switch splines or resize. The comb
@@ -116,6 +120,33 @@ export default function build(k) {
   return subtract(smoothUnion(0.05, plate, handle), ...holes);
 }
 ```
+
+## Anchoring to splines
+
+Name a spline and take a point from it; the reference is anchored to the curve:
+
+```js
+const rail = spline({ name: 'rail', points, r: 0.05 });
+const left = spline({ name: 'rail left', points: other, r: 0.05 });
+
+const bar = capsule({ a: rail.at(0.5), b: left.at(0.5), r: 0.05 });
+// or move a part to the curve:
+translate(rail.at(0.25), sphere({ r: 0.1 }));
+```
+
+`at(t)` (`t` in `[0, 1]`) returns an **opaque point reference** accepted by
+`capsule({ a, b })` and `translate(point, …)`. References are resolved by the
+compiler **after spline overrides**, so dragging the rail in the spline editor
+moves everything anchored to it, and nothing duplicates the curve formula.
+Resolution is a compile-time step — the renderer still receives plain capsule
+endpoints and transforms, so this adds no GPU work. Splines used by `at()` must
+have a unique `name` (there is a clear error otherwise).
+
+A named spline can also be **reused under several transforms** (the bracket
+example defines one `rail` and instances it left/right). Shared subtrees are
+emitted once and instanced with transforms: the instances are identical, share
+their uniforms and shader function, and the spline editor shows a single tab, so
+one edit updates all of them.
 
 ## The DSL
 

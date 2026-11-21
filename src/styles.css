@@ -2686,3 +2686,14 @@ select {
     width: 88px;
   }
 }
+
+.tree-shared {
+  flex: none;
+  font-size: 8px;
+  line-height: 13px;
+  color: var(--teal);
+  border: 1px solid rgba(103, 179, 168, 0.28);
+  border-radius: 3px;
+  padding: 0 3px;
+  font-family: var(--mono);
+}

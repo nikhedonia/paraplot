@@ -7,6 +7,7 @@ import { PRESETS } from '../src/core/presets';
 import { compileExpression } from '../src/core/expr';
 import { curvatureCombs, sampleSpline } from '../src/core/spline';
 import { normalizeHexColor } from '../src/core/math';
+import type { Node } from '../src/core/types';
 
 let failures = 0;
 const ok = (cond: unknown, label: string) => {
@@ -30,7 +31,10 @@ for (const preset of PRESETS) {
   ok(p.bounds.min.every(Number.isFinite) && p.bounds.max.every(Number.isFinite), 'finite bounds');
   ok(p.values.length >= p.stats.values, 'value pool matches');
   ok(p.materials.length >= 1, `${p.materials.length} materials`);
-  ok(base.animated === (preset.id === 'orbit'), `animated flag is ${base.animated}`);
+  ok(
+    base.animated === (preset.id === 'orbit' || preset.id === 'dog'),
+    `animated flag is ${base.animated}`,
+  );
   ok(sampleSpline([[0, 0, 0], [1, 1, 0], [2, 0, 0]], false, 8).length > 3, 'spline sampling');
   ok(compileExpression('x*x + y*y - 1').length > 0, 'expression parser');
 
@@ -83,7 +87,9 @@ for (const preset of PRESETS) {
   if (at1.ok) {
     ok(at1.program.glsl === p.glsl, 'time does not change the shader text');
     const moved = at1.program.values.some((v, i) => v !== p.values[i]);
-    if (preset.id === 'orbit') ok(moved, 'build(k, t) responds to time');
+    if (preset.id === 'orbit' || preset.id === 'dog') {
+      ok(moved, 'build(k, t) responds to time');
+    }
     if (preset.id === 'gyroid') {
       ok(p.usesTime, 'implicit reads the shader clock');
       ok(!moved, 'implicit time stays a uniform');
@@ -93,13 +99,17 @@ for (const preset of PRESETS) {
   // spline overrides flow through
   if (p.splines.length > 0) {
     const s = p.splines[0];
-    const pts = s.points.map((pt, i) => pt.map((v) => v + (i === 0 ? 0.01 : 0)));
-    const withOverride = compileScene(preset.source, {}, { [s.id]: pts });
-    ok(withOverride.ok, 'compiles with spline overrides');
-    if (withOverride.ok) {
-      const after = withOverride.program.splines.find((x) => x.id === s.id);
-      ok(!!after && Math.abs(after.points[0][0] - pts[0][0]) < 1e-9, 'override is applied');
-      ok(withOverride.program.glsl === p.glsl, 'shader text stable while dragging splines');
+    const delta = s.points.map((_, i) => {
+      const d = new Array(s.dim).fill(0);
+      if (i === 0) d[0] = 0.01;
+      return d;
+    });
+    const withOffset = compileScene(preset.source, {}, { [s.id]: delta });
+    ok(withOffset.ok, 'compiles with spline offsets');
+    if (withOffset.ok) {
+      const after = withOffset.program.splines.find((x) => x.id === s.id);
+      ok(!!after && Math.abs(after.points[0][0] - (s.points[0][0] + 0.01)) < 1e-9, 'offset is applied');
+      ok(withOffset.program.glsl === p.glsl, 'shader text stable while dragging splines');
     }
   }
 }
@@ -130,6 +140,92 @@ ok(
   combs.spikes.every((s) => s.point[0] * s.dir[0] + s.point[1] * s.dir[1] > 0),
   'spikes point outward',
 );
+
+console.log('\nspline point references');
+const REF_SRC = String.raw`
+export default function build() {
+  const rail = spline({ name: 'rail', points: [[0, 0, 0], [1, 1, 0], [2, 0, 0]], r: 0.05, seg: 8 });
+  return union(
+    paint(rail, '#aebbc7'),
+    group({ name: 'bar' }, paint(capsule({ a: rail.at(0.5), b: [0, 0, 0], r: 0.02 }), '#e0a267')),
+    group({ name: 'anchor', t: rail.at(0.25) }, sphere({ r: 0.1 })),
+  );
+}`;
+
+const findNodes = (root: Node, pred: (n: Node) => boolean, out: Node[] = []): Node[] => {
+  if (pred(root)) out.push(root);
+  if (root.kind === 'group' || root.kind === 'op') root.children.forEach((c) => findNodes(c, pred, out));
+  else if (root.kind === 'paint' || root.kind === 'offset' || root.kind === 'shell') findNodes(root.child, pred, out);
+  return out;
+};
+const near = (a: number[], b: number[], eps = 1e-3) => a.length === b.length && a.every((v, i) => Math.abs(v - b[i]) < eps);
+
+const refs = compileScene(REF_SRC, {}, {});
+ok(refs.ok, `spline refs compile${refs.ok ? '' : `: ${refs.error}`}`);
+if (refs.ok) {
+  const capsule = findNodes(refs.program.scene, (n) => n.kind === 'capsule')[0] as any;
+  ok(capsule && near(capsule.a, [1, 1, 0]), 'capsule endpoint resolves to the curve midpoint');
+  ok(capsule && !capsule.aRef, 'reference is resolved before rendering');
+  const anchor = findNodes(refs.program.scene, (n) => (n as any).name === 'anchor')[0] as any;
+  ok(anchor && Math.hypot(...anchor.t) > 0.1 && !anchor.tRef, 'translations resolve references');
+
+  const moved = compileScene(
+    REF_SRC,
+    {},
+    { rail: [[0, 0, 0], [0, 1, 0], [0, 0, 0]] },
+  );
+  ok(moved.ok, 'refs compile with spline overrides');
+  if (moved.ok) {
+    const capsule = findNodes(moved.program.scene, (n) => n.kind === 'capsule')[0] as any;
+    ok(capsule && near(capsule.a, [1, 2, 0]), 'anchored points follow spline overrides');
+  }
+}
+
+const shared = compileScene(PRESETS[0].source, {}, {});
+ok(shared.ok, `shared spline example compiles${shared.ok ? '' : `: ${shared.error}`}`);
+if (shared.ok) {
+  ok(shared.program.splines.length === 1, 'a reused spline is listed once for editing');
+  const splines = findNodes(shared.program.scene, (n) => n.kind === 'spline');
+  ok(splines.length === 2 && splines[0] === splines[1], 'one spline node is instanced twice');
+  const overridden = compileScene(PRESETS[0].source, {}, {
+    rail: shared.program.splines[0].points.map((_, i) => (i === 2 ? [0, 0.2, 0] : [0, 0, 0])),
+  });
+  ok(overridden.ok, 'shared spline compiles with overrides');
+  if (overridden.ok) {
+    const after = findNodes(overridden.program.scene, (n) => n.kind === 'spline');
+    ok(after.length === 2 && after[0] === after[1], 'overrides keep the instances shared');
+    ok(Math.abs((after[0] as any).points[2][1] - (shared.program.splines[0].points[2][1] + 0.2)) < 1e-6, 'override reaches the shared spline');
+  }
+}
+
+const ANIM_REF = String.raw`
+export default function build(k, t) {
+  const wave = spline({ name: 'wave', points: [[0, 0, 0], [1, t, 0], [2, 0, 0]], r: 0.05, seg: 8 });
+  return wave;
+}`;
+const animOffset = { wave: [[0, 0, 0], [0, 1, 0], [0, 0, 0]] };
+const anim0 = compileScene(ANIM_REF, {}, animOffset, 0);
+const anim1 = compileScene(ANIM_REF, {}, animOffset, 1);
+ok(anim0.ok && anim1.ok, 'animated spline accepts offsets');
+if (anim0.ok && anim1.ok) {
+  const y0 = anim0.program.splines[0].points[1][1];
+  const y1 = anim1.program.splines[0].points[1][1];
+  ok(Math.abs(y0 - 1) < 1e-6 && Math.abs(y1 - 2) < 1e-6, 'edited animated spline keeps animating');
+}
+
+const unnamedRef = compileScene(
+  "export default () => { const s = spline({ points: [[0,0,0],[1,1,0]] }); return translate(s.at(0.5), sphere()); }",
+  {},
+  {},
+);
+ok(!unnamedRef.ok && /name/.test(unnamedRef.error), 'at() requires a named spline');
+
+const ambiguousRef = compileScene(
+  "export default () => { const a = spline({ name: 'x', points: [[0,0,0],[1,1,0]] }); const b = spline({ name: 'x', points: [[0,0,0],[0,1,0]] }); return union(a, b, translate(a.at(0.5), sphere())); }",
+  {},
+  {},
+);
+ok(!ambiguousRef.ok && /ambiguous/.test(ambiguousRef.error), 'duplicate spline names are rejected when referenced');
 
 console.log('\ncolours');
 ok(normalizeHexColor('#abc') === '#aabbcc', 'short hex expands');

@@ -14,6 +14,17 @@ export interface Aabb {
   max: Vec3;
 }
 
+/**
+ * Opaque point on a named spline. Created by `spline(...).at(t)`, accepted by
+ * capsule endpoints and translations, and resolved by the compiler after
+ * spline overrides have been applied.
+ */
+export interface SplinePointRef {
+  readonly __splinePoint: true;
+  readonly name: string;
+  readonly t: number;
+}
+
 export interface SplineInfo {
   /** stable id: user supplied name, or the traversal index */
   id: string;
@@ -98,6 +109,9 @@ export interface CapsuleNode {
   kind: 'capsule';
   a: Vec3;
   b: Vec3;
+  /** unresolved spline references (the compiler fills a/b from these) */
+  aRef?: SplinePointRef;
+  bRef?: SplinePointRef;
   r: number;
 }
 
@@ -156,6 +170,8 @@ export interface GroupNode {
   /** optional label shown in the component tree */
   name?: string;
   t: Vec3;
+  /** unresolved spline reference for the translation */
+  tRef?: SplinePointRef;
   r: Vec3; // euler degrees, applied X then Y then Z
   s: Vec3;
   op: OpKind;

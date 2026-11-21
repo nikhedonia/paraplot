@@ -6,6 +6,7 @@ import type {
   SplineNode,
   ExtrudeNode,
   LatheNode,
+  SplinePointRef,
 } from './types';
 import { compileExpression } from './expr';
 import { isVec2, isVec3, parseHexColor, vec3 as toVec3, clamp as clampNum } from './math';
@@ -66,6 +67,20 @@ const vecArg = (
   return out;
 };
 
+const isSplinePointRef = (v: unknown): v is SplinePointRef =>
+  !!v && typeof v === 'object' && (v as { __splinePoint?: unknown }).__splinePoint === true;
+
+/** a Vec3, or an opaque `spline.at(t)` reference resolved at compile time */
+const pointArg = (
+  fn: string,
+  name: string,
+  v: unknown,
+  fallback: Vec3,
+): { point: Vec3; ref?: SplinePointRef } => {
+  if (isSplinePointRef(v)) return { point: [0, 0, 0], ref: v };
+  return { point: vecArg(fn, name, v, fallback) };
+};
+
 const isNode = (v: unknown): v is Node =>
   !!v && typeof v === 'object' && typeof (v as { kind?: unknown }).kind === 'string';
 
@@ -110,8 +125,8 @@ const smoothness = (k: number) => (Number.isFinite(k) && k > 0 ? k : 0);
 export interface Xform {
   /** label for the component tree */
   name?: string;
-  /** translation */
-  t?: Vec3 | number;
+  /** translation (or an opaque spline point reference) */
+  t?: Vec3 | number | SplinePointRef;
   /** euler rotation in degrees, applied X then Y then Z */
   r?: Vec3 | number;
   /** scale, uniform or per axis */
@@ -122,14 +137,18 @@ export interface Xform {
   k?: number;
 }
 
-const readXform = (fn: string, o: Xform = {}) => ({
-  name: typeof o.name === 'string' ? o.name : undefined,
-  t: vecArg(fn, 't', o.t, [0, 0, 0]),
-  r: vecArg(fn, 'r', o.r, [0, 0, 0]),
-  s: vecArg(fn, 's', o.s, [1, 1, 1], (n) => n !== 0),
-  op: opArg(fn, o.op),
-  k: smoothness(numArg(fn, 'k', o.k, 0, (n) => n >= 0)),
-});
+const readXform = (fn: string, o: Xform = {}) => {
+  const t = pointArg(fn, 't', o.t, [0, 0, 0]);
+  return {
+    name: typeof o.name === 'string' ? o.name : undefined,
+    t: t.point,
+    ...(t.ref ? { tRef: t.ref } : {}),
+    r: vecArg(fn, 'r', o.r, [0, 0, 0]),
+    s: vecArg(fn, 's', o.s, [1, 1, 1], (n) => n !== 0),
+    op: opArg(fn, o.op),
+    k: smoothness(numArg(fn, 'k', o.k, 0, (n) => n >= 0)),
+  };
+};
 
 /**
  * A group establishes a local coordinate system for its children.
@@ -147,7 +166,10 @@ export function group(o: Xform = {}, ...children: unknown[]): Node {
 
 export const transform = group;
 
-export function translate(t: Vec3 | number, ...children: unknown[]): Node {
+export function translate(
+  t: Vec3 | number | SplinePointRef,
+  ...children: unknown[]
+): Node {
   return group({ t }, ...children);
 }
 
@@ -320,17 +342,22 @@ export const cone = (o: ConeOpts = {}): Node => {
 };
 
 export interface CapsuleOpts {
-  a?: Vec3;
-  b?: Vec3;
+  a?: Vec3 | SplinePointRef;
+  b?: Vec3 | SplinePointRef;
   r?: number;
 }
-export const capsule = (o: CapsuleOpts = {}): Node =>
-  mk({
+export const capsule = (o: CapsuleOpts = {}): Node => {
+  const a = pointArg('capsule', 'a', o.a, [0, -1, 0]);
+  const b = pointArg('capsule', 'b', o.b, [0, 1, 0]);
+  return mk({
     kind: 'capsule' as const,
-    a: vecArg('capsule', 'a', o.a, [0, -1, 0]),
-    b: vecArg('capsule', 'b', o.b, [0, 1, 0]),
+    a: a.point,
+    b: b.point,
+    ...(a.ref ? { aRef: a.ref } : {}),
+    ...(b.ref ? { bRef: b.ref } : {}),
     r: numArg('capsule', 'r', o.r, 0.25, (n) => n > 0),
   });
+};
 
 export interface PlaneOpts {
   n?: Vec3;
@@ -422,6 +449,35 @@ const pointsArg = <T extends number[]>(
 
 const closedArg = (v: unknown, fallback: boolean) => (v === undefined ? fallback : !!v);
 
+/**
+ * Give spline-like nodes an `at(t)` accessor. It returns an opaque point
+ * reference which the compiler resolves *after* spline overrides, so anything
+ * anchored to the curve follows it while editing.
+ */
+const attachAt = <T extends { name?: string }>(node: T): T => {
+  Object.defineProperty(node, 'at', {
+    enumerable: false,
+    configurable: false,
+    writable: false,
+    value: function (this: T, t: number) {
+      if (!this.name) {
+        throw new Error(
+          'at(): give the spline a name so the reference can be resolved, e.g. spline({ name: "rail", ... })',
+        );
+      }
+      if (typeof t !== 'number' || !Number.isFinite(t)) {
+        throw new Error('at(): expected a finite number between 0 and 1');
+      }
+      return Object.freeze({
+        __splinePoint: true as const,
+        name: this.name,
+        t: Math.min(1, Math.max(0, t)),
+      });
+    },
+  });
+  return node;
+};
+
 export interface SplineOpts {
   points: Vec3[];
   /** tube radius */
@@ -432,14 +488,16 @@ export interface SplineOpts {
   name?: string;
 }
 export const spline = (o: SplineOpts): SplineNode =>
-  mk({
-    kind: 'spline' as const,
-    points: pointsArg<Vec3>('spline', o.points, 3, 2),
-    r: numArg('spline', 'r', o.r, 0.05, (n) => n > 0),
-    closed: closedArg(o.closed, false),
-    seg: Math.round(numArg('spline', 'seg', o.seg, 10, (n) => n >= 1 && n <= 64)),
-    name: typeof o.name === 'string' ? o.name : undefined,
-  });
+  mk(
+    attachAt({
+      kind: 'spline' as const,
+      points: pointsArg<Vec3>('spline', o.points, 3, 2),
+      r: numArg('spline', 'r', o.r, 0.05, (n) => n > 0),
+      closed: closedArg(o.closed, false),
+      seg: Math.round(numArg('spline', 'seg', o.seg, 10, (n) => n >= 1 && n <= 64)),
+      name: typeof o.name === 'string' ? o.name : undefined,
+    }),
+  );
 
 export interface ExtrudeOpts {
   /** profile in the xy plane */
@@ -452,15 +510,17 @@ export interface ExtrudeOpts {
   name?: string;
 }
 export const extrude = (o: ExtrudeOpts): ExtrudeNode =>
-  mk({
-    kind: 'extrude' as const,
-    points: pointsArg<Vec2>('extrude', o.points, 2, 3),
-    h: numArg('extrude', 'h', o.h, 1, (n) => n > 0),
-    round: numArg('extrude', 'round', o.round, 0, (n) => n >= 0),
-    closed: closedArg(o.closed, true),
-    seg: Math.round(numArg('extrude', 'seg', o.seg, 8, (n) => n >= 1 && n <= 64)),
-    name: typeof o.name === 'string' ? o.name : undefined,
-  });
+  mk(
+    attachAt({
+      kind: 'extrude' as const,
+      points: pointsArg<Vec2>('extrude', o.points, 2, 3),
+      h: numArg('extrude', 'h', o.h, 1, (n) => n > 0),
+      round: numArg('extrude', 'round', o.round, 0, (n) => n >= 0),
+      closed: closedArg(o.closed, true),
+      seg: Math.round(numArg('extrude', 'seg', o.seg, 8, (n) => n >= 1 && n <= 64)),
+      name: typeof o.name === 'string' ? o.name : undefined,
+    }),
+  );
 
 export interface LatheOpts {
   /** profile as [radius, y] pairs */
@@ -470,13 +530,15 @@ export interface LatheOpts {
   name?: string;
 }
 export const lathe = (o: LatheOpts): LatheNode =>
-  mk({
-    kind: 'lathe' as const,
-    points: pointsArg<Vec2>('lathe', o.points, 2, 3),
-    closed: closedArg(o.closed, true),
-    seg: Math.round(numArg('lathe', 'seg', o.seg, 8, (n) => n >= 1 && n <= 64)),
-    name: typeof o.name === 'string' ? o.name : undefined,
-  });
+  mk(
+    attachAt({
+      kind: 'lathe' as const,
+      points: pointsArg<Vec2>('lathe', o.points, 2, 3),
+      closed: closedArg(o.closed, true),
+      seg: Math.round(numArg('lathe', 'seg', o.seg, 8, (n) => n >= 1 && n <= 64)),
+      name: typeof o.name === 'string' ? o.name : undefined,
+    }),
+  );
 
 /* ------------------------------------------------------------------ */
 /* numeric helpers + expression language                               */

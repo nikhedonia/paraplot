@@ -90,7 +90,7 @@ const isNode = (v: unknown): v is Node =>
   !!v && typeof v === 'object' && typeof (v as { kind?: unknown }).kind === 'string';
 
 /**
- * PURE: source + parameter values + spline overrides + time in, a compiled
+ * PURE: source + parameter values + spline offsets + time in, a compiled
  * program out. Nothing is mutated; identical inputs give identical shaders.
  * (The parsed module is memoised, which is safe because modules are pure.)
  */

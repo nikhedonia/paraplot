@@ -2,6 +2,8 @@ import type { ParamValues } from '../core/controls';
 import { DEFAULT_SETTINGS, type RenderSettings } from '../render/settings';
 
 export interface ProjectRecord {
+  /** record version; v2 stores spline overrides as offsets */
+  v?: number;
   id: string;
   name: string;
   source: string;
@@ -43,6 +45,7 @@ const newId = (): string => {
 export function newProject(name: string, source = STARTER_SOURCE, thumbnail?: string): ProjectRecord {
   const now = Date.now();
   return {
+    v: 2,
     id: newId(),
     name: name.trim() || 'Untitled',
     source,

@@ -70,7 +70,22 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
   const [name, setName] = useState(initial.name);
   const [source, setSource] = useState(initial.source);
   const [paramValues, setParamValues] = useState<ParamValues>(initial.params ?? {});
-  const [overrides, setOverrides] = useState<Record<string, number[][]>>(initial.overrides ?? {});
+  const [overrides, setOverrides] = useState<Record<string, number[][]>>(() => {
+    // v2 stores offsets; older records stored absolute points, migrate them
+    if ((initial.v ?? 1) >= 2) return initial.overrides ?? {};
+    const saved = initial.overrides ?? {};
+    if (Object.keys(saved).length === 0) return {};
+    const base = compileScene(initial.source, initial.params ?? {}, {});
+    if (!base.ok) return {};
+    const basePoints = new Map(base.program.splines.map((sp) => [sp.id, sp.points]));
+    const out: Record<string, number[][]> = {};
+    for (const [id, pts] of Object.entries(saved)) {
+      const b = basePoints.get(id);
+      if (!b || b.length !== pts.length) continue;
+      out[id] = pts.map((p, i) => p.map((v, k) => v - (b[i]?.[k] ?? 0)));
+    }
+    return out;
+  });
   const [selectedSpline, setSelectedSpline] = useState<string | null>(null);
   const [splinePlacement, setSplinePlacement] = useState<SplinePlacement>('dock');
   const [splineView, setSplineView] = useState<SplineViewMode>('split');
@@ -235,6 +250,7 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
   const persist = useCallback(async (extra?: { thumbnail?: string }) => {
     const record: ProjectRecord = {
       ...latest.current,
+      v: 2,
       name: latest.current.name.trim() || 'Untitled',
       ...(extra?.thumbnail ? { thumbnail: extra.thumbnail } : {}),
       updatedAt: Date.now(),
@@ -294,6 +310,7 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
       if (leaving.current) return;
       const record: ProjectRecord = {
         ...latest.current,
+        v: 2,
         name: latest.current.name.trim() || 'Untitled',
         updatedAt: Date.now(),
       };
@@ -335,9 +352,37 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
     setFrameSignal((n) => n + 1);
   }, []);
 
-  const setSplinePoints = useCallback((id: string, points: number[][]) => {
-    setOverrides((o) => ({ ...o, [id]: points }));
-  }, []);
+  // spline edits are stored as offsets from the generated curve, so animated
+  // splines keep moving around the edited shape
+  const baseCache = useRef<{
+    source: string;
+    values: ParamValues;
+    points: Map<string, number[][]>;
+  } | null>(null);
+
+  const baseSplinePoints = useCallback(() => {
+    const cached = baseCache.current;
+    if (cached && cached.source === debouncedSource && cached.values === paramValues) {
+      return cached.points;
+    }
+    const base = compileScene(debouncedSource, paramValues, {});
+    const points = new Map<string, number[][]>();
+    if (base.ok) {
+      for (const sp of base.program.splines) points.set(sp.id, sp.points);
+    }
+    baseCache.current = { source: debouncedSource, values: paramValues, points };
+    return points;
+  }, [debouncedSource, paramValues]);
+
+  const setSplinePoints = useCallback(
+    (id: string, points: number[][]) => {
+      const base = baseSplinePoints().get(id);
+      if (!base || base.length !== points.length) return;
+      const offsets = points.map((p, i) => p.map((v, k) => v - (base[i]?.[k] ?? 0)));
+      setOverrides((o) => ({ ...o, [id]: offsets }));
+    },
+    [baseSplinePoints],
+  );
 
   const resetSpline = useCallback((id: string) => {
     setOverrides((o) => {
@@ -744,7 +789,8 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
             </div>
             <p className="modal-note">
               Name a group to label it in the tree:{' '}
-              <code>{'group({ name: "wheel", t: … }, …)'}</code>. Analyse surfaces with the
+              <code>{'group({ name: "wheel", t: … }, …)'}</code>. Name a spline and use
+              <code>rail.at(0.5)</code> to anchor capsule endpoints or translations to it. Analyse surfaces with the
               shaded / normals / curvature / gradient / zebra selector in the viewport; curvature
               combs are toggled in the splines dock header. Use the `splines` buttons in the top
               bar to place the spline editor in the dock, the editor pane or the viewport; the

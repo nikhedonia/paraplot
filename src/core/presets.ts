@@ -31,28 +31,35 @@ export default function build(k) {
   const plate = group({ name: 'plate', t: [0, T / 2, 0] },
     paint(box({ s: [W / 2, T / 2, D / 2], round: 0.035 }), k.finish));
 
-  // --- two spline rails (drag their control points in the spline dock)
-  const railAt = (z) => {
-    const points = range(5).map((i) => {
+  // --- one spline, instanced twice with a transform. Both rails are the same
+  // curve, so they stay identical and change together in the spline editor.
+  const offset = D * 0.3;
+  const railCurve = spline({
+    name: 'rail',
+    points: range(5).map((i) => {
       const t = i / 4;
-      return [lerp(-end, end, t), T - 0.05 + k.lift * Math.sin(Math.PI * t), z];
-    });
-    return group({ name: z < 0 ? 'rail left' : 'rail right' },
-      paint(spline({ points, r: k.tube, seg: 12 }), k.accent));
-  };
+      return [lerp(-end, end, t), T - 0.05 + k.lift * Math.sin(Math.PI * t), 0];
+    }),
+    r: k.tube,
+    seg: 12,
+  });
 
-  // --- a cross bar joins the two rails into a handle
+  const railPaint = paint(railCurve, k.accent);
+  const railLeft = group({ name: 'rail left' },
+    translate([0, 0, -offset], railPaint));
+  const railRight = group({ name: 'rail right' },
+    translate([0, 0, offset], railPaint));
+
+  // --- the cross bar is anchored to the shared spline apex. at() returns an
+  // opaque point reference, resolved after spline edits.
   const bar = group({ name: 'bar' },
-    paint(capsule({
-      a: [0, T - 0.05 + k.lift, -D * 0.3],
-      b: [0, T - 0.05 + k.lift,  D * 0.3],
-      r: k.tube,
-    }), k.accent));
+    translate(railCurve.at(0.5),
+      paint(capsule({ a: [0, 0, -offset], b: [0, 0, offset], r: k.tube }), k.accent)));
 
   const body = smoothUnion(k.blend,
     plate,
-    railAt(-D * 0.3),
-    railAt(D * 0.3),
+    railLeft,
+    railRight,
     bar);
 
   // --- holes drilled straight through the plate
@@ -188,11 +195,80 @@ export default function build(k, t) {
 }
 `;
 
+
+const DOG = String.raw`// paraplot — a dog that wags its tail
+// The second argument is time; everything except the tail is static.
+
+export const params = {
+  wag:    num(0.30, { min: 0.0, max: 0.7, step: 0.01, label: 'tail wag' }),
+  speed:  num(1.10, { min: 0.1, max: 3.0, step: 0.05, label: 'wag speed' }),
+  lift:   num(0.70, { min: 0.0, max: 1.0, step: 0.01, label: 'tail lift' }),
+  collar: bool(true, 'collar'),
+  fur:    color('#c08a5a', 'fur'),
+  dark:   color('#6a4630', 'ears & nose'),
+  red:    color('#c94f3d', 'collar'),
+  cream:  color('#efd9b4', 'tail tip'),
+};
+
+export default function build(k, t) {
+  // --- tail: a spline with a travelling wave, anchored to its own tip
+  const tailPoints = range(6).map((i) => {
+    const u = i / 5;
+    const sway = Math.sin(t * k.speed * TAU - u * 2.4) * k.wag * Math.pow(u, 1.4);
+    return [-0.52 - u * 0.62, 0.80 + u * 0.50 * k.lift, sway];
+  });
+  const tail = spline({ name: 'tail', points: tailPoints, r: 0.055, seg: 8 });
+
+  // --- body, blended
+  const torso  = translate([0, 0.60, 0], ellipsoid({ r: [0.55, 0.28, 0.27] }));
+  const chest  = translate([0.34, 0.63, 0], sphere({ r: 0.27 }));
+  const haunch = translate([-0.36, 0.60, 0], sphere({ r: 0.29 }));
+  const neck   = capsule({ a: [0.42, 0.78, 0], b: [0.68, 1.00, 0], r: 0.15 });
+  const head   = translate([0.82, 1.07, 0], ellipsoid({ r: [0.27, 0.24, 0.23] }));
+  const snout  = translate([1.02, 0.99, 0], ellipsoid({ r: [0.17, 0.11, 0.12] }));
+
+  const leg = (x, z, r) => capsule({ a: [x, 0.55, z], b: [x + 0.02, 0.10, z * 1.1], r });
+  const paw = (x, z) => translate([x + 0.05, 0.055, z * 1.1], ellipsoid({ r: [0.10, 0.055, 0.08] }));
+
+  return group({ name: 'dog' },
+    smoothUnion(0.05,
+      paint(torso, k.fur),
+      paint(chest, k.fur),
+      paint(haunch, k.fur),
+      paint(neck, k.fur),
+      paint(head, k.fur),
+      paint(snout, k.fur),
+      paint(leg(0.38, -0.18, 0.065), k.fur),
+      paint(leg(0.38,  0.18, 0.065), k.fur),
+      paint(leg(-0.35, -0.18, 0.07), k.fur),
+      paint(leg(-0.35,  0.18, 0.07), k.fur),
+      paint(paw(0.40, -0.18), k.dark),
+      paint(paw(0.40,  0.18), k.dark),
+      paint(paw(-0.37, -0.18), k.dark),
+      paint(paw(-0.37,  0.18), k.dark),
+      paint(tail, k.fur)),
+
+    // floppy ears, eyes and nose
+    paint(capsule({ a: [0.80, 1.24, -0.17], b: [0.72, 0.98, -0.27], r: 0.06 }), k.dark),
+    paint(capsule({ a: [0.80, 1.24,  0.17], b: [0.72, 0.98,  0.27], r: 0.06 }), k.dark),
+    paint(translate([1.00, 1.11, -0.15], sphere({ r: 0.04 })), k.dark),
+    paint(translate([1.00, 1.11,  0.15], sphere({ r: 0.04 })), k.dark),
+    paint(translate([1.17, 1.00, 0], sphere({ r: 0.05 })), k.dark),
+
+    // cream tip follows the tail (opaque reference)
+    translate(tail.at(1), paint(sphere({ r: 0.075 }), k.cream)),
+
+    k.collar ? paint(translate([0.58, 0.90, 0], rotate([0, 0, -52], torus({ R: 0.19, r: 0.035 }))), k.red) : null,
+  );
+}
+`;
+
 export const PRESETS: Preset[] = [
   { id: 'bracket', name: 'Handle bracket', blurb: 'groups · set ops · splines', source: BRACKET },
   { id: 'vase', name: 'Lathe vessel', blurb: 'revolve · profiles · subtract', source: VASE },
   { id: 'gyroid', name: 'Gyroid lattice', blurb: 'implicit equation · shader clock', source: GYROID },
   { id: 'orbit', name: 'Orbital rig', blurb: 'animated · build(k, t)', source: ORBIT },
+  { id: 'dog', name: 'Wagging dog', blurb: 'animated · spline tail', source: DOG },
 ];
 
 export const DEFAULT_SOURCE = BRACKET;
