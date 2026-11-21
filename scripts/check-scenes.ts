@@ -227,6 +227,76 @@ const ambiguousRef = compileScene(
 );
 ok(!ambiguousRef.ok && /ambiguous/.test(ambiguousRef.error), 'duplicate spline names are rejected when referenced');
 
+console.log('\nruled surfaces');
+const SURFACE_SRC = String.raw`
+export default function build() {
+  const a = spline({ name: 'a', points: [[0, 0, 0], [0, 1, 0], [0, 2, 0]], r: 0.02, seg: 8 });
+  const b = spline({ name: 'b', points: [[1, 0, 0], [1, 1, 0], [1, 2, 0]], r: 0.02, seg: 8 });
+  return surface({ a, b, thickness: 0.1, samples: 8 });
+}`;
+const sf = compileScene(SURFACE_SRC, {}, {});
+ok(sf.ok, `ruled surface compiles${sf.ok ? '' : `: ${sf.error}`}`);
+if (sf.ok) {
+  const node = findNodes(sf.program.scene, (n) => n.kind === 'surface')[0] as any;
+  ok(node?.sections?.length === 9, 'surface samples 9 rulings');
+  ok(node?.sections?.every((r: unknown[]) => r.length === 2), 'linear connect has 2 points per ruling');
+  ok(near(node.sections[0][0], [0, 0, 0]) && near(node.sections[0][1], [1, 0, 0]), 'first ruling joins a(0) to b(0)');
+  ok(near(node.sections[4][0], [0, 1, 0]) && near(node.sections[4][1], [1, 1, 0]), 'rulings advance with t');
+  ok(
+    near(sf.program.bounds.min, [-0.05, -0.05, -0.05]) && near(sf.program.bounds.max, [1.05, 2.05, 0.05]),
+    'surface bounds include the sheet thickness',
+  );
+  ok(sf.program.splines.map((s) => s.id).join(',') === 'a,b', 'construction curves are editable');
+
+  const moved = compileScene(SURFACE_SRC, {}, { a: [[0.2, 0, 0], [0, 0, 0], [0, 0, 0]] });
+  ok(moved.ok, 'surface compiles with spline overrides');
+  if (moved.ok) {
+    const m = findNodes(moved.program.scene, (n) => n.kind === 'surface')[0] as any;
+    ok(near(m.sections[0][0], [0.2, 0, 0]), 'ruled surface follows an edited construction curve');
+    ok(moved.program.glsl === sf.program.glsl, 'spline edits keep the surface shader stable');
+  }
+}
+
+const CUSTOM_CONNECT = String.raw`
+export default function build() {
+  const a = spline({ name: 'a', points: [[0, 0, 0], [0, 1, 0]], r: 0.02 });
+  const b = spline({ name: 'b', points: [[1, 0, 0], [1, 1, 0]], r: 0.02 });
+  return surface({
+    a, b, samples: 4, sSamples: 2,
+    connect: (p, q, s) => [lerp(p[0], q[0], s), lerp(p[1], q[1], s), 0.5 * Math.sin(PI * s)],
+  });
+}`;
+const bowed = compileScene(CUSTOM_CONNECT, {}, {});
+ok(bowed.ok, `custom connect compiles${bowed.ok ? '' : `: ${bowed.error}`}`);
+if (bowed.ok) {
+  const node = findNodes(bowed.program.scene, (n) => n.kind === 'surface')[0] as any;
+  ok(node?.sections?.[0]?.length === 3, 'sSamples subdivides each ruling');
+  ok(near(node.sections[0][1], [0.5, 0, 0.5]), 'custom connect bows the ruling');
+}
+
+const ANIM_SURFACE = String.raw`
+export default function build(k, t) {
+  const a = spline({ name: 'a', points: [[0, 0, 0], [0, 1, 0]], r: 0.02 });
+  const b = spline({ name: 'b', points: [[1, 0, 0], [1, 1 + t, 0]], r: 0.02 });
+  return surface({ a, b, thickness: 0.04, samples: 6 });
+}`;
+const sa0 = compileScene(ANIM_SURFACE, {}, {}, 0);
+const sa1 = compileScene(ANIM_SURFACE, {}, {}, 1);
+ok(sa0.ok && sa1.ok, 'animated construction curves compile');
+if (sa0.ok && sa1.ok) {
+  const n0 = findNodes(sa0.program.scene, (n) => n.kind === 'surface')[0] as any;
+  const n1 = findNodes(sa1.program.scene, (n) => n.kind === 'surface')[0] as any;
+  ok(near(n0.sections[6][1], [1, 1, 0]) && near(n1.sections[6][1], [1, 2, 0]), 'surface resamples animated curves');
+  ok(sa0.program.glsl === sa1.program.glsl, 'animating a surface keeps the shader stable');
+}
+
+const badSurface = compileScene(
+  "export default () => surface({ a: sphere(), b: spline({ points: [[0,0,0],[1,1,0]] }) })",
+  {},
+  {},
+);
+ok(!badSurface.ok && /must be a spline/.test(badSurface.error), 'surface() requires spline-like curves');
+
 console.log('\ncolours');
 ok(normalizeHexColor('#abc') === '#aabbcc', 'short hex expands');
 ok(normalizeHexColor('#abcd') === '#aabbcc', 'short hex with alpha drops alpha');

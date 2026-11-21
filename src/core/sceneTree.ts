@@ -90,6 +90,14 @@ export function describeNode(node: Node): { label: string; detail?: string } {
       return { label, detail: node.name ? `lathe · ${bits.join(' · ')}` : bits.join(' · ') };
     }
 
+    case 'surface': {
+      const rulings = node.sections?.length ?? node.samples + 1;
+      return {
+        label: 'surface',
+        detail: `${rulings} rulings · t ${num(node.thickness)} · ${node.sSamples + 1} across`,
+      };
+    }
+
     case 'group': {
       const bits: string[] = [];
       if (!isZero(node.t)) bits.push(`t ${vec(node.t)}`);

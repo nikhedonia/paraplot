@@ -46,6 +46,12 @@ function collectNamedSplines(
       }
       return;
     }
+    if (node.kind === 'surface') {
+      // construction curves are addressable with spline.at(t) elsewhere
+      walk(node.a);
+      walk(node.b);
+      return;
+    }
     if (node.kind === 'group' || node.kind === 'op') {
       node.children.forEach(walk);
     } else if (node.kind === 'paint' || node.kind === 'offset' || node.kind === 'shell') {

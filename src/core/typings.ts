@@ -205,6 +205,29 @@ interface LatheOpts {
 /** Revolve a closed [radius, y] profile around the y axis. Name it to use .at(t). */
 declare function lathe(o: LatheOpts): SplineSolid;
 
+/* ---- ruled surfaces ---- */
+
+interface SurfaceOpts {
+  /** first construction curve a(t) */
+  a: SplineSolid;
+  /** second construction curve b(t) */
+  b: SplineSolid;
+  /** thickness of the solidified sheet; rulings are round-edged */
+  thickness?: number;
+  /** rulings along t; keep the spacing below thickness so the sheet is solid */
+  samples?: number;
+  /** subdivisions across each ruling (default 1) */
+  sSamples?: number;
+  /** connect a(t) to b(t); defaults to a straight ruling */
+  connect?: (a: Vec3, b: Vec3, s: number) => Vec3;
+}
+/**
+ * A ruled surface between two construction curves, solidified into a thin
+ * sheet. Both curves are editable in the spline editor but are not rendered
+ * themselves. The connect function maps a(t) to b(t) for s in [0,1].
+ */
+declare function surface(o: SurfaceOpts): Solid;
+
 /* ---- numeric helpers ---- */
 
 declare const PI: number;
@@ -233,4 +256,5 @@ export const API_REFERENCE: Array<{ name: string; signature: string; note: strin
   { name: 'spline', signature: 'spline({ points, r })', note: 'Tube path' },
   { name: 'extrude', signature: 'extrude({ points, h })', note: 'Profile → solid' },
   { name: 'lathe', signature: 'lathe({ points })', note: 'Revolve profile' },
+  { name: 'surface', signature: 'surface({ a, b, thickness })', note: 'Ruled surface' },
 ];

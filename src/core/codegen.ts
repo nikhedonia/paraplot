@@ -3,6 +3,7 @@ import { sampleProfile, sampleSpline } from './spline';
 import { compileExpression } from './expr';
 import { resolveSplinePointRefs } from './splineRefs';
 import { boundsOf } from './bounds';
+import { resolveSurfaces, surfaceSegments } from './surface';
 import { fragmentShader } from '../render/glsl';
 
 export interface CompiledProgram {
@@ -35,8 +36,8 @@ class Gen {
   private usesTime = false;
 
   generate(root: Node): CompiledProgram {
-    // point references are resolved after spline overrides, before codegen
-    const scene = resolveSplinePointRefs(root);
+    // point references and ruled surfaces resolve after spline overrides
+    const scene = resolveSurfaces(resolveSplinePointRefs(root));
     const entry = this.emit(scene);
 
     const mapFn = `/* ${this.nodes} nodes, ${this.values.length} parameters */
@@ -180,6 +181,26 @@ ${sig} {
         return `${sig} { vec2 q = vec2(length(p.xz), p.y); return vec2(sdPoly(q, ${off}, ${pts.length}), 0.0); }`;
       }
 
+      case 'surface': {
+        const segments = surfaceSegments(node);
+        if (segments.length === 0) return `${sig} { return vec2(1e6, 0.0); }`;
+        const off = this.values.length;
+        for (const [a, b] of segments) {
+          this.values.push(a[0], a[1], a[2], b[0], b[1], b[2]);
+        }
+        const r = this.f(node.thickness * 0.5);
+        // one loop over the rulings keeps the shader small even for dense sheets
+        return `
+${sig} {
+  float rr = ${r};
+  float d = 1e12;
+  for (int i = 0; i < ${segments.length}; i++) {
+    d = min(d, sdCapsule(p, v3(${off} + 6 * i), v3(${off} + 6 * i + 3), rr));
+  }
+  return vec2(d, 0.0);
+}`.trim();
+      }
+
       case 'op':
         return this.opBody(name, node.op, node.k, node.children.map((c) => this.emit(c)));
 
@@ -289,6 +310,12 @@ export function collectSplines(root: Node): SplineInfo[] {
       });
       return;
     }
+    if (n.kind === 'surface') {
+      // construction curves are editable but not rendered on their own
+      walk(n.a);
+      walk(n.b);
+      return;
+    }
     if (n.kind === 'op' || n.kind === 'group') n.children.forEach(walk);
     else if (n.kind === 'offset' || n.kind === 'shell' || n.kind === 'paint') walk(n.child);
   };
@@ -335,6 +362,16 @@ export function applySplineOverrides(root: Node, overrides: Record<string, numbe
         return copy;
       }
       return n;
+    }
+
+    if (n.kind === 'surface') {
+      const a = walk(n.a);
+      const b = walk(n.b);
+      if (a === n.a && b === n.b) return n;
+      // construction curves changed: the rulings must be resampled
+      const next = { ...n, a, b, sections: undefined };
+      replaced.set(n, next);
+      return next;
     }
 
     if (n.kind === 'op' || n.kind === 'group') {

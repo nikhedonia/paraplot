@@ -68,7 +68,8 @@ export type Node =
   | GroupNode
   | OffsetNode
   | ShellNode
-  | PaintNode;
+  | PaintNode
+  | SurfaceNode;
 
 export interface SphereNode {
   kind: 'sphere';
@@ -196,4 +197,28 @@ export interface PaintNode {
   color: Vec3;
   rough: number;
   child: Node;
+}
+
+/**
+ * A ruled surface between two construction curves:
+ *   P(t, s) = connect(a(t), b(t), s)
+ * solidified into a thick ribbon (a union of capsule rulings).
+ * The construction splines are editable in the spline editor but are not
+ * rendered themselves.
+ */
+export interface SurfaceNode {
+  kind: 'surface';
+  /** construction curve a(t) */
+  a: Node;
+  /** construction curve b(t) */
+  b: Node;
+  /** thickness of the solidified sheet */
+  thickness: number;
+  /** rulings along t */
+  samples: number;
+  /** subdivisions of the connect across each ruling */
+  sSamples: number;
+  connect: (a: Vec3, b: Vec3, s: number) => Vec3;
+  /** filled by the compiler after spline overrides: one polyline per ruling */
+  sections?: Vec3[][];
 }

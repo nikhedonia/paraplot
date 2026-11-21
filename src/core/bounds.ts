@@ -8,6 +8,7 @@ import {
   unionAabb,
 } from './math';
 import { sampleProfile, sampleSpline } from './spline';
+import { resolveSurfaces } from './surface';
 
 const box = (min: Vec3, max: Vec3): Aabb => ({ min, max });
 
@@ -97,6 +98,21 @@ export function boundsOf(node: Node): Aabb {
         y1 = Math.max(y1, p[1]);
       }
       return box([-r, y0, -r], [r, y1, r]);
+    }
+
+    case 'surface': {
+      const resolved = node.sections ? node : (resolveSurfaces(node) as typeof node);
+      const r = node.thickness * 0.5;
+      const b = emptyAabb();
+      for (const ruling of resolved.sections ?? []) {
+        for (const p of ruling) {
+          for (let i = 0; i < 3; i++) {
+            b.min[i] = Math.min(b.min[i], p[i] - r);
+            b.max[i] = Math.max(b.max[i], p[i] + r);
+          }
+        }
+      }
+      return isEmptyAabb(b) ? box([-1, -1, -1], [1, 1, 1]) : b;
     }
 
     case 'op': {

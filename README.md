@@ -7,6 +7,7 @@ A small parametric CAD / SDF modeller that runs in the browser.
 - **set operations** — union, intersect, subtract with optional smooth blending
 - **groups & transforms** — local coordinate systems (translate / rotate / scale)
 - **splines** — 3D tube paths, extruded profiles and lathe profiles, with a point editor
+- **ruled surfaces** — loft a solid sheet between two editable construction splines
 - **parameters** — constants become sliders, toggles and colour pickers
 - **WebGL2 raymarcher** — soft shadows, ambient occlusion, materials, ground grid
 - **smoothness analysis** — normals, mean curvature, gradient and zebra views, plus curvature combs
@@ -148,6 +149,39 @@ emitted once and instanced with transforms: the instances are identical, share
 their uniforms and shader function, and the spline editor shows a single tab, so
 one edit updates all of them.
 
+## Ruled surfaces
+
+Two splines can be lofted into a solid instead of modelling a closed profile:
+
+```js
+const root = spline({ name: 'blade root', points: rootPoints, r: 0.02 });
+const tip  = spline({ name: 'blade tip',  points: tipPoints,  r: 0.02 });
+
+const blade = surface({
+  a: root,                 // construction curve a(t)
+  b: tip,                  // construction curve b(t)
+  thickness: 0.06,         // solidify the sheet
+  samples: 64,             // rulings along t
+  // connect: (a, b, s) => …   linear by default
+});
+```
+
+`surface` sweeps a ruling from `a(t)` to `b(t)` for every sampled `t`. The
+default `connect` is linear, so the ruling is the straight segment between the
+two points; a custom function gets `a`, `b` and `s ∈ [0, 1]` and returns the
+point at that fraction, which lets the ruling bow or twist. The sheet is then
+**solidified** into a thick ribbon (a union of capsule rulings), so it can be
+combined with the other solids.
+
+The two construction splines are **not rendered themselves**: they are
+reference geometry, still listed in the spline dock and edited exactly like any
+other curve. Rulings are resampled **after spline overrides** and on every clock
+tick, so dragging either edge or animating its points reshapes the surface
+without recompiling. Keep `samples` dense enough that adjacent rulings overlap
+(`spacing ≲ thickness`); otherwise the ribbon can show gaps. The impeller
+example uses this to loft a twisted blade between a root edge on the disc and a
+swept tip edge.
+
 ## The DSL
 
 ### Parameters
@@ -198,10 +232,12 @@ group({ t: [0, 1, 0], op: 'smoothUnion', k: 0.1 }, a, b);
 | `capsule({ a, b, r })` | `plane({ n, d })` |
 | `spline({ points, r, closed, seg })` | `extrude({ points, h, round })` |
 | `lathe({ points, seg })` | `implicit(equation, opts)` |
+| `surface({ a, b, thickness, samples })` | |
 
 `box` and `cylinder` take half extents / total height and are centred on the
 origin. `lathe` revolves `[radius, y]` pairs around the Y axis; `extrude` sweeps
-an `[x, y]` profile along Z.
+an `[x, y]` profile along Z. `surface` lofts a solid sheet between two
+construction splines (see [Ruled surfaces](#ruled-surfaces)).
 
 ### Set operations
 

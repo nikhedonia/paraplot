@@ -265,12 +265,14 @@ export default function build(k, t) {
 
 
 const IMPELLER = String.raw`// paraplot — a centrifugal impeller
-// Swept blades are extruded profiles; the scene clock spins the rotor.
+// Blades are ruled surfaces lofted between two edge splines:
+// the root curve sits on the disc, the tip curve twists with "lean".
 
 export const params = {
   blades:    int(7,    { min: 3, max: 12, label: 'blades' }),
   radius:    num(1.25, { min: 0.7, max: 1.7, step: 0.01,  label: 'radius' }),
   sweep:     num(52,   { min: 0, max: 90, step: 0.5,    label: 'sweep', unit: 'deg' }),
+  lean:      num(1.25, { min: 0.4, max: 2.0, step: 0.01, label: 'blade lean' }),
   height:    num(0.50, { min: 0.15, max: 0.9, step: 0.01, label: 'blade height' }),
   thickness: num(0.06, { min: 0.025, max: 0.14, step: 0.002, label: 'blade thickness' }),
   hub:       num(0.34, { min: 0.18, max: 0.5, step: 0.005, label: 'hub radius' }),
@@ -284,39 +286,29 @@ export default function build(k, t) {
   const discH = 0.14;
   const baseY = discH;
 
-  // --- one blade: a thin curved band following a backward spiral
-  const samples = 14;
-  const mid = range(samples).map((i) => {
-    const u = i / (samples - 1);
-    const r = lerp(hubR - 0.03, R, u);
-    const a = rad(k.sweep) * Math.pow(u, 1.25);
-    return [Math.cos(a) * r, Math.sin(a) * r];
+  // --- construction curves: the root and tip edges of a backward spiral
+  const edge = (y, sweep) => range(6).map((i) => {
+    const u = i / 5;
+    const r = lerp(hubR - 0.02, R, u);
+    const a = rad(sweep) * Math.pow(u, 1.2);
+    return [Math.cos(a) * r, y, -Math.sin(a) * r];
   });
 
-  const left = [], right = [];
-  for (let i = 0; i < samples; i++) {
-    const p = mid[i];
-    const a = mid[Math.max(0, i - 1)];
-    const b = mid[Math.min(samples - 1, i + 1)];
-    const dx = b[0] - a[0];
-    const dy = b[1] - a[1];
-    const l = Math.hypot(dx, dy) || 1;
-    const nx = -dy / l;
-    const ny = dx / l;
-    left.push([p[0] + nx * T * 0.5, p[1] + ny * T * 0.5]);
-    right.push([p[0] - nx * T * 0.5, p[1] - ny * T * 0.5]);
-  }
-  const profile = left.concat(right.reverse());
+  const rootEdge = spline({ name: 'blade root', points: edge(baseY, k.sweep), r: 0.02, seg: 12 });
+  const tipEdge  = spline({ name: 'blade tip',  points: edge(baseY + H, k.sweep * k.lean), r: 0.02, seg: 12 });
 
-  const blade = rotate([-90, 0, 0],
-    translate([0, 0, baseY + H * 0.5],
-      extrude({
-        points: profile,
-        h: H,
-        round: Math.min(0.018, T * 0.3),
-        closed: true,
-        seg: 1,
-      })));
+  // --- one blade: ruled surface root(t) --- tip(t), linear connect
+  const blade = surface({
+    a: rootEdge,
+    b: tipEdge,
+    thickness: T,
+    samples: 64,
+    connect: (a, b, s) => [
+      a[0] + (b[0] - a[0]) * s,
+      a[1] + (b[1] - a[1]) * s,
+      a[2] + (b[2] - a[2]) * s,
+    ],
+  });
 
   const blades = paint(union(range(k.blades).map((i) =>
     rotate([0, (i * 360) / k.blades, 0], blade))), k.brass);
@@ -357,7 +349,7 @@ export const PRESETS: Preset[] = [
   { id: 'gyroid', name: 'Gyroid lattice', blurb: 'implicit equation · shader clock', source: GYROID },
   { id: 'orbit', name: 'Orbital rig', blurb: 'animated · build(k, t)', source: ORBIT },
   { id: 'dog', name: 'Wagging dog', blurb: 'animated · spline tail', source: DOG },
-  { id: 'impeller', name: 'Impeller', blurb: 'swept blades · animated', source: IMPELLER },
+  { id: 'impeller', name: 'Impeller', blurb: 'ruled blades · animated', source: IMPELLER },
 ];
 
 export const DEFAULT_SOURCE = BRACKET;

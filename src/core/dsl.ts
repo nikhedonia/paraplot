@@ -7,8 +7,10 @@ import type {
   ExtrudeNode,
   LatheNode,
   SplinePointRef,
+  SurfaceNode,
 } from './types';
 import { compileExpression } from './expr';
+import { linearConnect } from './surface';
 import { isVec2, isVec3, parseHexColor, vec3 as toVec3, clamp as clampNum } from './math';
 import {
   num,
@@ -521,6 +523,62 @@ export const extrude = (o: ExtrudeOpts): ExtrudeNode =>
       name: typeof o.name === 'string' ? o.name : undefined,
     }),
   );
+
+/** A construction curve for surface(): a spline, extruded profile or lathe profile. */
+const curveArg = (fn: string, name: string, v: unknown): Node => {
+  if (
+    !v ||
+    typeof v !== 'object' ||
+    !('kind' in v) ||
+    !['spline', 'extrude', 'lathe'].includes((v as Node).kind)
+  ) {
+    fail(
+      `${fn}(): "${name}" must be a spline, extrude or lathe curve (got ${typeof v === 'object' ? String((v as Node | null)?.kind) : typeof v})`,
+    );
+  }
+  return v as Node;
+};
+
+export interface SurfaceOpts {
+  /** first construction curve a(t) */
+  a: unknown;
+  /** second construction curve b(t) */
+  b: unknown;
+  /** thickness of the solidified sheet (default 0.05) */
+  thickness?: number;
+  /** rulings along t (default 48); dense enough that rulings overlap */
+  samples?: number;
+  /** subdivisions across each ruling (default 1) */
+  sSamples?: number;
+  /** connect a(t) to b(t); defaults to a straight ruling */
+  connect?: (a: Vec3, b: Vec3, s: number) => Vec3;
+}
+
+/**
+ * A ruled surface between two construction curves:
+ *
+ *   P(t, s) = connect(a(t), b(t), s)
+ *
+ * The result is solidified into a thick ribbon. The construction curves stay
+ * editable in the spline editor (and animatable): the rulings are resampled
+ * after spline overrides, so the surface tracks both curves.
+ */
+export function surface(o: SurfaceOpts): SurfaceNode {
+  if (!o || typeof o !== 'object') fail('surface(): expected { a, b, ... }');
+  const a = curveArg('surface', 'a', o.a);
+  const b = curveArg('surface', 'b', o.b);
+  const connect = o.connect ?? linearConnect;
+  if (typeof connect !== 'function') fail('surface(): "connect" must be a function');
+  return mk({
+    kind: 'surface' as const,
+    a,
+    b,
+    thickness: numArg('surface', 'thickness', o.thickness, 0.05, (n) => n > 0),
+    samples: Math.round(numArg('surface', 'samples', o.samples, 48, (n) => n >= 2 && n <= 256)),
+    sSamples: Math.round(numArg('surface', 'sSamples', o.sSamples, 1, (n) => n >= 1 && n <= 32)),
+    connect,
+  });
+}
 
 export interface LatheOpts {
   /** profile as [radius, y] pairs */
