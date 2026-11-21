@@ -361,8 +361,7 @@ Pushes to `main` (or `master`) deploy through GitHub Actions
   sub-path. The app uses hash routes (`#/p/<id>`), so no server rewrites are
   needed.
 - Repository **Settings → Pages → Build and deployment → Source** must be
-  **GitHub Actions**. The workflow enables Pages on its first run
-  (`configure-pages` with `enablement: true`).
+  **GitHub Actions**. Enable it once; the workflow then deploys on every push.
 - **`nikhedonia.net` must be the custom domain of the user site
   (`nikhedonia.github.io`)**, not of this project repository. GitHub then serves
   project sites under `https://nikhedonia.net/<repo>/`, which is why the base
