@@ -3037,3 +3037,14 @@ select {
   height: 20px;
   font-size: 9px;
 }
+
+@media (max-width: 480px) {
+  .hud-quality input {
+    width: 44px;
+  }
+
+  .hud-tr .iconbtn[title="Soft shadows"],
+  .hud-tr .iconbtn[title="Ambient occlusion"] {
+    display: none;
+  }
+}
