@@ -238,10 +238,20 @@ const sf = compileScene(SURFACE_SRC, {}, {});
 ok(sf.ok, `ruled surface compiles${sf.ok ? '' : `: ${sf.error}`}`);
 if (sf.ok) {
   const node = findNodes(sf.program.scene, (n) => n.kind === 'surface')[0] as any;
-  ok(node?.sections?.length === 9, 'surface samples 9 rulings');
-  ok(node?.sections?.every((r: unknown[]) => r.length === 2), 'linear connect has 2 points per ruling');
-  ok(near(node.sections[0][0], [0, 0, 0]) && near(node.sections[0][1], [1, 0, 0]), 'first ruling joins a(0) to b(0)');
-  ok(near(node.sections[4][0], [0, 1, 0]) && near(node.sections[4][1], [1, 1, 0]), 'rulings advance with t');
+  ok(node?.edges?.a?.length === 9 && node?.edges?.b?.length === 9, 'surface uploads 9 edge pairs');
+  ok(near(node.edges.a[0], [0, 0, 0]) && near(node.edges.b[0], [1, 0, 0]), 'first ruling joins a(0) to b(0)');
+  ok(near(node.edges.a[4], [0, 1, 0]) && near(node.edges.b[4], [1, 1, 0]), 'edge samples advance with t');
+  ok(
+    sf.program.glsl.includes('vec3 connect0(vec3 a, vec3 b, float s)') &&
+      sf.program.glsl.includes('return mix(a, b, s);'),
+    'default linear connect is emitted as GLSL',
+  );
+  ok(
+    sf.program.glsl.includes('for (int i = 0; i < 9; i++)') &&
+      sf.program.glsl.includes('connect0(a, b, float(j) / float(1))'),
+    'the shader evaluates the connect per ruling',
+  );
+  ok(!('sections' in node), 'rulings are not baked on the CPU');
   ok(
     near(sf.program.bounds.min, [-0.05, -0.05, -0.05]) && near(sf.program.bounds.max, [1.05, 2.05, 0.05]),
     'surface bounds include the sheet thickness',
@@ -252,7 +262,7 @@ if (sf.ok) {
   ok(moved.ok, 'surface compiles with spline overrides');
   if (moved.ok) {
     const m = findNodes(moved.program.scene, (n) => n.kind === 'surface')[0] as any;
-    ok(near(m.sections[0][0], [0.2, 0, 0]), 'ruled surface follows an edited construction curve');
+    ok(near(m.edges.a[0], [0.2, 0, 0]), 'ruled surface follows an edited construction curve');
     ok(moved.program.glsl === sf.program.glsl, 'spline edits keep the surface shader stable');
   }
 }
@@ -262,17 +272,30 @@ export default function build() {
   const a = spline({ name: 'a', points: [[0, 0, 0], [0, 1, 0]], r: 0.02 });
   const b = spline({ name: 'b', points: [[1, 0, 0], [1, 1, 0]], r: 0.02 });
   return surface({
-    a, b, samples: 4, sSamples: 2,
-    connect: (p, q, s) => [lerp(p[0], q[0], s), lerp(p[1], q[1], s), 0.5 * Math.sin(PI * s)],
+    a, b, samples: 4, sSamples: 2, thickness: 0.04, margin: 1,
+    connect: 'return mix(a, b, s) + vec3(0.0, 0.5 * sin(3.14159 * s), 0.0);',
   });
 }`;
 const bowed = compileScene(CUSTOM_CONNECT, {}, {});
 ok(bowed.ok, `custom connect compiles${bowed.ok ? '' : `: ${bowed.error}`}`);
 if (bowed.ok) {
-  const node = findNodes(bowed.program.scene, (n) => n.kind === 'surface')[0] as any;
-  ok(node?.sections?.[0]?.length === 3, 'sSamples subdivides each ruling');
-  ok(near(node.sections[0][1], [0.5, 0, 0.5]), 'custom connect bows the ruling');
+  ok(bowed.program.glsl.includes('0.5 * sin(3.14159 * s)'), 'custom GLSL body is in the shader');
+  ok(bowed.program.glsl.includes('for (int j = 1; j <= 2; j++)'), 'sSamples subdivides the ruling loop');
+  ok(
+    near(bowed.program.bounds.min, [-1.02, -1.02, -1.02]) &&
+      near(bowed.program.bounds.max, [2.02, 2.02, 1.02]),
+    'margin expands the surface bounds',
+  );
 }
+
+const BARE_CONNECT = String.raw`
+export default function build() {
+  const a = spline({ name: 'a', points: [[0, 0, 0], [0, 1, 0]], r: 0.02 });
+  const b = spline({ name: 'b', points: [[1, 0, 0], [1, 1, 0]], r: 0.02 });
+  return surface({ a, b, connect: 'mix(a, b, s)' });
+}`;
+const bare = compileScene(BARE_CONNECT, {}, {});
+ok(bare.ok && bare.program.glsl.includes('return mix(a, b, s);'), 'a bare connect expression is wrapped');
 
 const ANIM_SURFACE = String.raw`
 export default function build(k, t) {
@@ -286,7 +309,7 @@ ok(sa0.ok && sa1.ok, 'animated construction curves compile');
 if (sa0.ok && sa1.ok) {
   const n0 = findNodes(sa0.program.scene, (n) => n.kind === 'surface')[0] as any;
   const n1 = findNodes(sa1.program.scene, (n) => n.kind === 'surface')[0] as any;
-  ok(near(n0.sections[6][1], [1, 1, 0]) && near(n1.sections[6][1], [1, 2, 0]), 'surface resamples animated curves');
+  ok(near(n0.edges.b[6], [1, 1, 0]) && near(n1.edges.b[6], [1, 2, 0]), 'surface resamples animated curves');
   ok(sa0.program.glsl === sa1.program.glsl, 'animating a surface keeps the shader stable');
 }
 
@@ -296,6 +319,13 @@ const badSurface = compileScene(
   {},
 );
 ok(!badSurface.ok && /must be a spline/.test(badSurface.error), 'surface() requires spline-like curves');
+
+const jsConnect = compileScene(
+  "export default () => { const a = spline({ points: [[0,0,0],[1,0,0]] }); const b = spline({ points: [[0,1,0],[1,1,0]] }); return surface({ a, b, connect: (p, q, s) => p }); }",
+  {},
+  {},
+);
+ok(!jsConnect.ok && /must be GLSL/.test(jsConnect.error), 'surface() connect must be GLSL code');
 
 console.log('\ncolours');
 ok(normalizeHexColor('#abc') === '#aabbcc', 'short hex expands');

@@ -21,7 +21,10 @@ export type IconName =
   | 'panelLeft'
   | 'panelRight'
   | 'panelBottom'
-  | 'logo';
+  | 'logo'
+  | 'code'
+  | 'cube'
+  | 'sliders';
 
 const paths: Record<IconName, ReactNode> = {
   frame: (
@@ -139,6 +142,26 @@ const paths: Record<IconName, ReactNode> = {
     <>
       <path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z" />
       <path d="M12 12l8-4.5M12 12v9M12 12L4 7.5" opacity="0.6" />
+    </>
+  ),
+  code: (
+    <>
+      <path d="M8 7l-5 5 5 5" />
+      <path d="M16 7l5 5-5 5" />
+      <path d="M13.5 4l-3 16" opacity="0.55" />
+    </>
+  ),
+  cube: (
+    <>
+      <path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z" />
+      <path d="M12 12l8-4.5M12 12v9M12 12L4 7.5" opacity="0.55" />
+    </>
+  ),
+  sliders: (
+    <>
+      <path d="M4 7h10M18 7h2M4 17h2M10 17h10" />
+      <circle cx="16" cy="7" r="2" />
+      <circle cx="8" cy="17" r="2" />
     </>
   ),
 };

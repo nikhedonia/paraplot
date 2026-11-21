@@ -216,15 +216,21 @@ interface SurfaceOpts {
   thickness?: number;
   /** rulings along t; keep the spacing below thickness so the sheet is solid */
   samples?: number;
-  /** subdivisions across each ruling (default 1) */
+  /** subdivisions of each ruling evaluated in the shader (default 1) */
   sSamples?: number;
-  /** connect a(t) to b(t); defaults to a straight ruling */
-  connect?: (a: Vec3, b: Vec3, s: number) => Vec3;
+  /**
+   * GLSL for vec3 connect(vec3 a, vec3 b, float s), evaluated on the GPU.
+   * Pass an expression ("mix(a, b, s)") or a body with a return. Defaults
+   * to the straight ruling mix(a, b, s).
+   */
+  connect?: string;
+  /** extra bounds margin for connects that leave the a/b segment */
+  margin?: number;
 }
 /**
  * A ruled surface between two construction curves, solidified into a thin
  * sheet. Both curves are editable in the spline editor but are not rendered
- * themselves. The connect function maps a(t) to b(t) for s in [0,1].
+ * themselves. The connect shader maps a(t) to b(t) for s in [0,1] on the GPU.
  */
 declare function surface(o: SurfaceOpts): Solid;
 
@@ -256,5 +262,5 @@ export const API_REFERENCE: Array<{ name: string; signature: string; note: strin
   { name: 'spline', signature: 'spline({ points, r })', note: 'Tube path' },
   { name: 'extrude', signature: 'extrude({ points, h })', note: 'Profile → solid' },
   { name: 'lathe', signature: 'lathe({ points })', note: 'Revolve profile' },
-  { name: 'surface', signature: 'surface({ a, b, thickness })', note: 'Ruled surface' },
+  { name: 'surface', signature: 'surface({ a, b, thickness })', note: 'Ruled surface · GPU connect' },
 ];

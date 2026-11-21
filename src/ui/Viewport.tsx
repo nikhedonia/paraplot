@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { MutableRefObject } from 'react';
-import type { CompiledProgram } from '../core/codegen';
+import type { ProgramView } from '../core/compileProtocol';
 import type { Aabb } from '../core/types';
 import { type CameraState, defaultCamera, cameraPosition } from '../render/renderer';
 import type { RenderSettings, ViewMode } from '../render/settings';
@@ -12,17 +12,17 @@ import {
 import { Icon } from './Icon';
 
 export interface AnimateResult {
-  program: CompiledProgram | null;
+  program: ProgramView | null;
   error?: string;
 }
 
 export interface ViewportProps {
-  program: CompiledProgram | null;
+  program: ProgramView | null;
   settings: RenderSettings;
   onSettings: (s: RenderSettings) => void;
   onError: (msg: string | null) => void;
   /** re-evaluates the scene at a given time (only used by animated scenes) */
-  animate?: (time: number) => AnimateResult;
+  animate?: (time: number) => Promise<AnimateResult>;
   /** the scene function takes a time argument */
   animated?: boolean;
   playing: boolean;
@@ -40,6 +40,14 @@ export interface ViewportProps {
   hasSplines?: boolean;
   /** stop drawing while another surface covers the viewport */
   paused?: boolean;
+  /** stored project image shown while the first frame is prepared */
+  preview?: string | null;
+  /** status line under the boot spinner */
+  bootLabel?: string;
+  /** the scene failed to compile: stop the spinner, show the editor error */
+  bootFailed?: boolean;
+  /** notified once the first frame has been presented */
+  onFirstFrame?: () => void;
 }
 
 interface Size {
@@ -47,19 +55,28 @@ interface Size {
   h: number;
 }
 
-const QUALITY: Array<{ label: string; scale: number; steps: number }> = [
-  { label: 'Draft', scale: 0.55, steps: 72 },
-  { label: 'Standard', scale: 0.8, steps: 128 },
-  { label: 'Fine', scale: 1.0, steps: 200 },
-];
-
+/** first frames run at the floor quality so a heavy scene can never wedge the GPU */
+const BOOT_QUALITY = 0.3;
+const PROBE_STEPS = 32;
+/** target milliseconds for one refined frame */
+const FRAME_BUDGET = 34;
 /** while dragging, render fewer pixels and skip shadows … */
 const DRAFT_MS = 140;
 const DRAFT_SCALE = 0.62;
 /** … then draw one full quality frame once the interaction settles */
 const IDLE_MS = 500;
 /** hard cap on the drawing buffer so 4k/retina screens don't melt */
-const PIXEL_BUDGET = 2_600_000;
+const PIXEL_BUDGET = 2_000_000;
+
+const qualitySteps = (scale: number): number =>
+  Math.max(24, Math.min(200, Math.round(40 + ((Math.min(1, Math.max(0.3, scale)) - 0.3) / 0.7) * 160)));
+
+interface QualityState {
+  phase: 'probe1' | 'probe2' | 'ramp' | 'idle';
+  scale: number;
+  target: number;
+  rampCount: number;
+}
 
 export function Viewport({
   program,
@@ -77,6 +94,10 @@ export function Viewport({
   emptyLabel = null,
   hasSplines = false,
   paused = false,
+  preview = null,
+  bootLabel = 'preparing the viewport',
+  bootFailed = false,
+  onFirstFrame,
 }: ViewportProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -97,6 +118,8 @@ export function Viewport({
   playingRef.current = playing;
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
+  const onFirstFrameRef = useRef(onFirstFrame);
+  onFirstFrameRef.current = onFirstFrame;
   const clockRef = useRef(0);
   const autoScaleRef = useRef(1);
   const dirtyRef = useRef(true);
@@ -105,6 +128,25 @@ export function Viewport({
   const wakeRef = useRef<() => void>(() => {});
   const pausedRef = useRef(paused);
   pausedRef.current = paused;
+  const hasFrameRef = useRef(false);
+  const qualityRef = useRef<QualityState>({
+    phase: 'probe1',
+    scale: BOOT_QUALITY,
+    target: settings.scale,
+    rampCount: 0,
+  });
+  const renderStartRef = useRef(0);
+  const submittedScaleRef = useRef(settings.scale);
+  const shownQualityRef = useRef(settings.scale);
+  const animInFlightRef = useRef(false);
+  const animSeqRef = useRef(0);
+  const lostRef = useRef(0);
+  const [backendEpoch, setBackendEpoch] = useState(0);
+  const [hasFrame, setHasFrame] = useState(false);
+  const [bootVisible, setBootVisible] = useState(true);
+  const [bootSlow, setBootSlow] = useState(false);
+  const [bootError, setBootError] = useState<string | null>(null);
+  const [effectiveQuality, setEffectiveQuality] = useState(settings.scale);
   const [stats, setStats] = useState({
     fps: 0,
     w: 0,
@@ -114,6 +156,41 @@ export function Viewport({
     renderer: 'main' as 'main' | 'worker',
   });
   const [webglError, setWebglError] = useState<string | null>(null);
+
+  const restartBackend = useCallback(() => {
+    setBackendEpoch((n) => n + 1);
+  }, []);
+  const onLostRef = useRef<() => void>(() => {});
+  const handleContextLost = useCallback(() => {
+    lostRef.current++;
+    const n = lostRef.current;
+    setBootError(
+      n <= 2
+        ? 'GPU context lost — restarting at the lowest quality…'
+        : 'The GPU context was lost repeatedly. Retry, or simplify the scene.',
+    );
+    setBootVisible(true);
+    setHasFrame(false);
+    hasFrameRef.current = false;
+    if (n <= 2) window.setTimeout(restartBackend, 700);
+  }, [restartBackend]);
+  onLostRef.current = handleContextLost;
+
+  useEffect(() => {
+    if (!hasFrame) {
+      setBootVisible(true);
+      return;
+    }
+    const t = window.setTimeout(() => setBootVisible(false), 300);
+    return () => window.clearTimeout(t);
+  }, [hasFrame]);
+
+  useEffect(() => {
+    if (!program || hasFrame) return;
+    setBootSlow(false);
+    const t = window.setTimeout(() => setBootSlow(true), 10000);
+    return () => window.clearTimeout(t);
+  }, [program, hasFrame, backendEpoch]);
 
   const frame = useCallback((bounds: Aabb) => {
     const c = cameraRef.current;
@@ -178,6 +255,7 @@ export function Viewport({
     host.prepend(canvas);
 
     let backend: RenderBackend | null = null;
+    let disposed = false;
     let raf = 0;
     let last = performance.now();
     let frames = 0;
@@ -187,14 +265,31 @@ export function Viewport({
     let idleTimer = 0;
     let refineTimer = 0;
     let idle = true;
-    let animatedFor: CompiledProgram | null = null;
     let lastAnimError: string | null = null;
+
+    hasFrameRef.current = false;
+    setHasFrame(false);
+    setBootVisible(true);
+    setBootSlow(false);
+    setBootError(null);
+    setWebglError(null);
+    qualityRef.current = {
+      phase: 'probe1',
+      scale: BOOT_QUALITY,
+      target: settingsRef.current.scale,
+      rampCount: 0,
+    };
+    setEffectiveQuality(BOOT_QUALITY);
+    shownQualityRef.current = BOOT_QUALITY;
+    autoScaleRef.current = 1;
+    animSeqRef.current++;
+    animInFlightRef.current = false;
 
     const isLive = () =>
       playingRef.current && (animatedRef.current || !!programRef.current?.usesTime);
 
     function ensure() {
-      if (raf || document.hidden) return;
+      if (disposed || raf || document.hidden) return;
       last = performance.now();
       raf = requestAnimationFrame(tick);
     }
@@ -213,6 +308,32 @@ export function Viewport({
       setStats((s) => (s.live ? { ...s, live: false } : s));
     }
 
+    /** ask the compile worker for the next animation sample */
+    function requestAnimation() {
+      const animateFn = animateRef.current;
+      if (animInFlightRef.current || !animateFn) return;
+      animInFlightRef.current = true;
+      const seq = animSeqRef.current;
+      void Promise.resolve(animateFn(clockRef.current))
+        .then((res) => {
+          animInFlightRef.current = false;
+          if (disposed || seq !== animSeqRef.current || !backendRef.current) return;
+          if (res.program) {
+            lastAnimError = null;
+            backendRef.current.setScene(res.program);
+            dirtyRef.current = true;
+            ensure();
+          } else if (res.error && res.error !== lastAnimError) {
+            lastAnimError = res.error;
+            onErrorRef.current(`animation: ${res.error}`);
+          }
+        })
+        .catch((err: unknown) => {
+          animInFlightRef.current = false;
+          onErrorRef.current(`animation: ${(err as Error)?.message ?? String(err)}`);
+        });
+    }
+
     /** one ack per presented frame, from either backend */
     const onFrame = (info: FrameInfo) => {
       frames++;
@@ -221,6 +342,59 @@ export function Viewport({
         publishedH = info.height;
         setStats((s) => ({ ...s, w: info.width, h: info.height }));
       }
+
+      if (!hasFrameRef.current) {
+        hasFrameRef.current = true;
+        setHasFrame(true);
+        setBootError(null);
+        setBootSlow(false);
+        onFirstFrameRef.current?.();
+        if (lostRef.current > 0) {
+          window.setTimeout(() => {
+            lostRef.current = 0;
+          }, 12000);
+        }
+      }
+
+      // measure the first frames and choose a sustainable quality; the probe
+      // is intentionally the lowest resolution and disables expensive effects
+      const q = qualityRef.current;
+      if (q.phase !== 'idle') {
+        const ms = info.renderMs ?? performance.now() - renderStartRef.current;
+        if (q.phase === 'probe1') {
+          // first frame may include a lazy shader/driver compile: measure again
+          q.phase = 'probe2';
+          dirtyRef.current = true;
+          ensure();
+        } else if (q.phase === 'probe2') {
+          q.scale = Math.max(
+            BOOT_QUALITY,
+            Math.min(q.target, 0.85 * BOOT_QUALITY * Math.sqrt(FRAME_BUDGET / Math.max(ms, 1))),
+          );
+          q.phase = 'ramp';
+          q.rampCount = 0;
+          dirtyRef.current = true;
+          ensure();
+        } else {
+          q.rampCount++;
+          if (ms < FRAME_BUDGET * 0.7 && q.scale < q.target) {
+            q.scale = Math.min(q.target, q.scale * 1.18);
+          } else if (ms > FRAME_BUDGET * 1.35 && q.scale > BOOT_QUALITY) {
+            q.scale = Math.max(BOOT_QUALITY, q.scale * 0.85);
+          }
+          const settled = ms > FRAME_BUDGET * 0.55 && ms < FRAME_BUDGET * 1.25;
+          if (q.scale >= q.target - 0.01 || settled || q.rampCount >= 5) q.phase = 'idle';
+          dirtyRef.current = true;
+          ensure();
+        }
+      }
+
+      const actualScale = submittedScaleRef.current;
+      if (Math.abs(actualScale - shownQualityRef.current) > 0.01) {
+        shownQualityRef.current = actualScale;
+        setEffectiveQuality(actualScale);
+      }
+
       const now = performance.now();
       if (now - fpsStart > 400) {
         const fps = Math.round((frames * 1000) / (now - fpsStart));
@@ -251,7 +425,11 @@ export function Viewport({
     try {
       backend = createBackend(canvas, {
         onFrame,
-        onError: (message) => onErrorRef.current(message),
+        onError: (message) => {
+          onErrorRef.current(message);
+          if (message && !hasFrameRef.current) setBootError(message);
+        },
+        onContextLost: () => onLostRef.current(),
       });
     } catch (err) {
       setWebglError((err as Error).message ?? String(err));
@@ -265,6 +443,7 @@ export function Viewport({
     host.dataset.renderer = backend.offscreen ? 'worker' : 'main';
     setStats((s) => ({ ...s, renderer: backend?.offscreen ? 'worker' : 'main' }));
 
+    if (programRef.current) backend.setScene(programRef.current);
     if (snapshotRef) {
       snapshotRef.current = () => {
         dirtyRef.current = true;
@@ -274,7 +453,7 @@ export function Viewport({
     }
 
     function tick(now: number) {
-      if (!backend) return;
+      if (!backend || disposed) return;
       raf = 0;
       if (pausedRef.current) return;
       const live = isLive();
@@ -284,6 +463,8 @@ export function Viewport({
 
       const { w, h } = sizeRef.current;
       if (w < 2 || h < 2) return;
+      // no scene yet: the boot preview stays up until a program is compiled
+      if (!programRef.current) return;
 
       const sinceTap = now - lastTapRef.current;
       const drafting = interactingRef.current || sinceTap < DRAFT_MS;
@@ -307,36 +488,35 @@ export function Viewport({
         idleTimer = 0;
       }
 
-      // an animated scene is a pure function of (params, time): rebuild it each
-      // frame. Parameter drags while paused still refresh at the paused time.
-      if (animatedRef.current && animateRef.current) {
-        if (live || animatedFor !== programRef.current) {
-          const res = animateRef.current(clockRef.current);
-          animatedFor = programRef.current;
-          if (res.program) {
-            lastAnimError = null;
-            backend.setScene(res.program);
-          } else if (res.error && res.error !== lastAnimError) {
-            lastAnimError = res.error;
-            onErrorRef.current(`animation: ${res.error}`);
-          }
-        }
-      }
+      // one sample in flight at a time; the viewport renders the last sample
+      if (live && animatedRef.current) requestAnimation();
 
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
-      let scale = settingsRef.current.scale * (drafting ? DRAFT_SCALE : 1);
+      const q = qualityRef.current;
+      const probing = q.phase === 'probe1' || q.phase === 'probe2';
+      const baseScale = probing ? BOOT_QUALITY : q.scale;
+      let scale = baseScale * (drafting ? DRAFT_SCALE : 1);
       if (live) scale *= autoScaleRef.current;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
       const pixels = w * h * dpr * dpr * scale * scale;
       if (pixels > PIXEL_BUDGET) scale *= Math.sqrt(PIXEL_BUDGET / pixels);
+      scale = Math.max(0.12, scale);
 
       const base = settingsRef.current;
-      const renderSettings: RenderSettings = drafting
-        ? { ...base, shadows: false, maxSteps: Math.min(base.maxSteps, 88) }
-        : base;
+      const firstProbe = q.phase === 'probe1';
+      const renderSettings: RenderSettings = {
+        ...base,
+        maxSteps: firstProbe
+          ? PROBE_STEPS
+          : Math.min(qualitySteps(scale), drafting ? 88 : 200),
+        shadows: firstProbe || drafting ? false : base.shadows,
+        ao: firstProbe || drafting ? false : base.ao,
+      };
 
-      // the grid plane is a scene-level constant: use the static (t = 0) bounds
+      // the grid plane is a scene-level constant: use the static bounds
       // so it does not bob while an animated scene moves
       const b = programRef.current?.bounds;
+      submittedScaleRef.current = scale;
+      renderStartRef.current = performance.now();
       try {
         backend.render({
           camera: cameraRef.current,
@@ -347,6 +527,7 @@ export function Viewport({
           time: clockRef.current,
           floorY: b ? b.min[1] - 0.004 : 0,
           scale,
+          probe: q.phase !== 'idle',
         });
       } catch (err) {
         onErrorRef.current((err as Error).message ?? String(err));
@@ -391,6 +572,9 @@ export function Viewport({
     document.addEventListener('visibilitychange', onVisibility);
 
     return () => {
+      disposed = true;
+      animSeqRef.current++;
+      animInFlightRef.current = false;
       if (raf) cancelAnimationFrame(raf);
       if (idleTimer) clearTimeout(idleTimer);
       if (refineTimer) clearTimeout(refineTimer);
@@ -405,11 +589,14 @@ export function Viewport({
       wakeRef.current = () => {};
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [snapshotRef]);
+  }, [snapshotRef, backendEpoch]);
 
   /* ---- upload scene ---- */
   useEffect(() => {
     if (!program) return;
+    // a new scene invalidates any animation sample that was in flight
+    animSeqRef.current++;
+    animInFlightRef.current = false;
     frameRef.current = program.bounds;
     backendRef.current?.setScene(program);
     if (!framedRef.current) {
@@ -429,8 +616,26 @@ export function Viewport({
   }, [frameSignal]);
 
   /* ---- any of these need a fresh frame ---- */
+  const settingsSeen = useRef(false);
+  const scaleSeen = useRef(settings.scale);
   useEffect(() => {
-    autoScaleRef.current = 1;
+    if (!settingsSeen.current) {
+      settingsSeen.current = true;
+      scaleSeen.current = settings.scale;
+      return;
+    }
+    if (settings.scale !== scaleSeen.current) {
+      // a manual quality change pins the scale (the boot ramp is done)
+      scaleSeen.current = settings.scale;
+      const q = qualityRef.current;
+      q.phase = 'idle';
+      q.scale = settings.scale;
+      q.target = settings.scale;
+      q.rampCount = 0;
+      autoScaleRef.current = 1;
+      shownQualityRef.current = settings.scale;
+      setEffectiveQuality(settings.scale);
+    }
     wakeRef.current();
   }, [settings, playing, animated]);
 
@@ -553,10 +758,6 @@ export function Viewport({
     };
   }, [frame]);
 
-  const qualityIndex = Math.max(
-    0,
-    QUALITY.findIndex((q) => q.scale === settings.scale),
-  );
   const view: ViewMode = settings.view ?? 'shaded';
 
   return (
@@ -570,6 +771,12 @@ export function Viewport({
         </div>
         <div className="chip">
           {stats.w}×{stats.h}
+        </div>
+        <div
+          className="chip dim qualitychip"
+          title="current render scale — the slider below is the target"
+        >
+          q {Math.round(effectiveQuality * 100)}%
         </div>
         {(animated || program?.usesTime) && (
           <div className={`chip time ${playing ? 'live' : ''}`} title="scene clock">
@@ -636,18 +843,22 @@ export function Viewport({
         >
           <Icon name="ao" />
         </button>
-        <div className="segmented small">
-          {QUALITY.map((q, i) => (
-            <button
-              key={q.label}
-              className={i === qualityIndex ? 'active' : ''}
-              title={`${q.label} — ${q.steps} march steps`}
-              onClick={() => onSettings({ ...settings, scale: q.scale, maxSteps: q.steps })}
-            >
-              {q.label[0]}
-            </button>
-          ))}
-        </div>
+        <label className="hud-quality" title="Render quality target — starts low and ramps up as frames are measured">
+          <span>quality</span>
+          <input
+            type="range"
+            min={30}
+            max={100}
+            step={5}
+            value={Math.round(settings.scale * 100)}
+            onChange={(e) => {
+              const scale = Number(e.target.value) / 100;
+              onSettings({ ...settings, scale, maxSteps: qualitySteps(scale) });
+            }}
+            aria-label="Render quality target"
+          />
+          <span className="hud-quality-val">{Math.round(settings.scale * 100)}%</span>
+        </label>
       </div>
 
       <div className="hud hud-bl">
@@ -728,8 +939,51 @@ export function Viewport({
         </div>
       )}
 
-      {(webglError || !program) && (
-        <div className="viewport-error">{webglError ?? emptyLabel ?? 'Compiling scene…'}</div>
+      {emptyLabel && hasFrame && <div className="viewport-error">{emptyLabel}</div>}
+
+      {bootVisible && (
+        <div className={`viewport-boot ${hasFrame ? 'leaving' : ''}`} aria-live="polite">
+          {preview ? (
+            <img className="boot-preview" src={preview} alt="" draggable={false} />
+          ) : (
+            <div className="boot-blank">
+              <Icon name="logo" size={44} />
+            </div>
+          )}
+          <div className="boot-shade" />
+          <div className="boot-status">
+            {bootError || webglError || bootFailed ? (
+              <span className="boot-warn" aria-hidden="true">
+                !
+              </span>
+            ) : (
+              <span className="spinner" aria-hidden="true" />
+            )}
+            <div className="boot-copy">
+              <strong>{bootError ?? webglError ?? bootLabel}</strong>
+              <span>
+                {bootError || webglError
+                  ? 'the stored preview stays visible while the renderer recovers'
+                  : bootFailed
+                    ? 'fix the error in the editor; the last valid scene is kept'
+                    : bootSlow
+                      ? 'still working — the GPU is taking longer than usual'
+                      : 'first frame runs at low quality; it sharpens as timing is measured'}
+              </span>
+            </div>
+            {(bootError || webglError || bootSlow) && !bootFailed && (
+              <button
+                className="ghostbtn boot-retry"
+                onClick={() => {
+                  lostRef.current = 0;
+                  restartBackend();
+                }}
+              >
+                retry
+              </button>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );

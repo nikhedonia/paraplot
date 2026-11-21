@@ -31,7 +31,7 @@ scope.onmessage = async (event: MessageEvent) => {
         renderer = new Renderer(canvas);
         canvas.addEventListener('webglcontextlost', (e) => {
           e.preventDefault();
-          post({ type: 'error', message: 'the WebGL context was lost — reload the page' });
+          post({ type: 'context-lost' });
         });
         post({ type: 'ready' });
       } catch (err) {
@@ -66,6 +66,7 @@ scope.onmessage = async (event: MessageEvent) => {
       }
       try {
         renderer.setScene(scene());
+        const t0 = performance.now();
         renderer.render(
           args.camera,
           args.settings,
@@ -76,10 +77,15 @@ scope.onmessage = async (event: MessageEvent) => {
           args.floorY,
           args.scale,
         );
+        if (args.probe) renderer.gl.finish();
+        post({
+          type: 'rendered',
+          width: renderer.canvas.width,
+          height: renderer.canvas.height,
+          renderMs: performance.now() - t0,
+        });
       } catch (err) {
         post({ type: 'error', message: (err as Error).message ?? String(err) });
-      } finally {
-        post({ type: 'rendered', width: renderer.canvas.width, height: renderer.canvas.height });
       }
       break;
     }

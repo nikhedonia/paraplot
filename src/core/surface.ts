@@ -1,12 +1,8 @@
 import type { Node, SurfaceNode, Vec3 } from './types';
 import { sampleProfile, sampleSpline } from './spline';
 
-/** The default connect: a straight rul(ing) between a(t) and b(t). */
-export const linearConnect = (a: Vec3, b: Vec3, s: number): Vec3 => [
-  a[0] + (b[0] - a[0]) * s,
-  a[1] + (b[1] - a[1]) * s,
-  a[2] + (b[2] - a[2]) * s,
-];
+/** The default connect body: the straight ruling, evaluated in the shader. */
+export const DEFAULT_SURFACE_CONNECT = 'return mix(a, b, s);';
 
 const isCurve = (n: Node): boolean =>
   n.kind === 'spline' || n.kind === 'extrude' || n.kind === 'lathe';
@@ -40,38 +36,30 @@ export function pointAtPolyline(points: Vec3[], t: number): Vec3 {
 }
 
 /**
- * PURE: sample both construction curves and apply the connect function.
- * Runs after spline overrides, so the surface tracks edits to either curve.
+ * PURE: sample both construction curves at the ruling parameters. The connect
+ * itself is a GLSL function and is not evaluated here; the GPU interpolates
+ * `a` to `b` for every raymarch sample.
  */
 export function resolveSurfaces(root: Node): Node {
   const cache = new Map<Node, Node>();
 
   const walk = (node: Node): Node => {
     if (node.kind === 'surface') {
-      if (node.sections) return node;
+      if (node.edges) return node;
       const cached = cache.get(node);
       if (cached) return cached;
 
       const aPts = constructionCurve(node.a);
       const bPts = constructionCurve(node.b);
-      const sections: Vec3[][] = [];
-
+      const a: Vec3[] = [];
+      const b: Vec3[] = [];
       for (let i = 0; i <= node.samples; i++) {
         const t = i / node.samples;
-        const a = pointAtPolyline(aPts, t);
-        const b = pointAtPolyline(bPts, t);
-        const ruling: Vec3[] = [];
-        for (let j = 0; j <= node.sSamples; j++) {
-          const p = node.connect(a, b, j / node.sSamples);
-          if (!Array.isArray(p) || p.length !== 3 || !p.every(Number.isFinite)) {
-            throw new Error('surface(): connect(a, b, s) must return [x, y, z]');
-          }
-          ruling.push([p[0], p[1], p[2]]);
-        }
-        sections.push(ruling);
+        a.push(pointAtPolyline(aPts, t));
+        b.push(pointAtPolyline(bPts, t));
       }
 
-      const resolved: SurfaceNode = { ...node, sections };
+      const resolved: SurfaceNode = { ...node, edges: { a, b } };
       cache.set(node, resolved);
       return resolved;
     }
@@ -95,13 +83,4 @@ export function resolveSurfaces(root: Node): Node {
   };
 
   return walk(root);
-}
-
-/** Consecutive capsule rulings of a resolved surface. */
-export function surfaceSegments(node: SurfaceNode): Array<[Vec3, Vec3]> {
-  const out: Array<[Vec3, Vec3]> = [];
-  for (const ruling of node.sections ?? []) {
-    for (let j = 0; j < ruling.length - 1; j++) out.push([ruling[j], ruling[j + 1]]);
-  }
-  return out;
 }

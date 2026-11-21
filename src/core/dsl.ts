@@ -10,7 +10,7 @@ import type {
   SurfaceNode,
 } from './types';
 import { compileExpression } from './expr';
-import { linearConnect } from './surface';
+import { DEFAULT_SURFACE_CONNECT } from './surface';
 import { isVec2, isVec3, parseHexColor, vec3 as toVec3, clamp as clampNum } from './math';
 import {
   num,
@@ -548,10 +548,16 @@ export interface SurfaceOpts {
   thickness?: number;
   /** rulings along t (default 48); dense enough that rulings overlap */
   samples?: number;
-  /** subdivisions across each ruling (default 1) */
+  /** subdivisions of each ruling evaluated in the shader (default 1) */
   sSamples?: number;
-  /** connect a(t) to b(t); defaults to a straight ruling */
-  connect?: (a: Vec3, b: Vec3, s: number) => Vec3;
+  /**
+   * GLSL for the connect, evaluated on the GPU:
+   * a body of `vec3 connect(vec3 a, vec3 b, float s)` or a bare expression.
+   * Defaults to `mix(a, b, s)`.
+   */
+  connect?: string;
+  /** extra bounds margin for connects that leave the a/b segment */
+  margin?: number;
 }
 
 /**
@@ -561,14 +567,18 @@ export interface SurfaceOpts {
  *
  * The result is solidified into a thick ribbon. The construction curves stay
  * editable in the spline editor (and animatable): the rulings are resampled
- * after spline overrides, so the surface tracks both curves.
+ * after spline overrides, so the surface tracks both curves. The connect is
+ * GLSL and is evaluated per raymarch sample, not baked into uniforms.
  */
 export function surface(o: SurfaceOpts): SurfaceNode {
   if (!o || typeof o !== 'object') fail('surface(): expected { a, b, ... }');
   const a = curveArg('surface', 'a', o.a);
   const b = curveArg('surface', 'b', o.b);
-  const connect = o.connect ?? linearConnect;
-  if (typeof connect !== 'function') fail('surface(): "connect" must be a function');
+  if (o.connect !== undefined && typeof o.connect !== 'string') {
+    fail('surface(): "connect" must be GLSL code, e.g. connect: "mix(a, b, s)"');
+  }
+  const connect =
+    typeof o.connect === 'string' && o.connect.trim() ? o.connect : DEFAULT_SURFACE_CONNECT;
   return mk({
     kind: 'surface' as const,
     a,
@@ -577,6 +587,7 @@ export function surface(o: SurfaceOpts): SurfaceNode {
     samples: Math.round(numArg('surface', 'samples', o.samples, 48, (n) => n >= 2 && n <= 256)),
     sSamples: Math.round(numArg('surface', 'sSamples', o.sSamples, 1, (n) => n >= 1 && n <= 32)),
     connect,
+    margin: numArg('surface', 'margin', o.margin, 0, (n) => n >= 0),
   });
 }
 

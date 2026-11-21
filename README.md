@@ -7,7 +7,7 @@ A small parametric CAD / SDF modeller that runs in the browser.
 - **set operations** — union, intersect, subtract with optional smooth blending
 - **groups & transforms** — local coordinate systems (translate / rotate / scale)
 - **splines** — 3D tube paths, extruded profiles and lathe profiles, with a point editor
-- **ruled surfaces** — loft a solid sheet between two editable construction splines
+- **ruled surfaces** — loft a solid between two editable splines; the connect runs as GLSL on the GPU
 - **parameters** — constants become sliders, toggles and colour pickers
 - **WebGL2 raymarcher** — soft shadows, ambient occlusion, materials, ground grid
 - **smoothness analysis** — normals, mean curvature, gradient and zebra views, plus curvature combs
@@ -158,29 +158,49 @@ const root = spline({ name: 'blade root', points: rootPoints, r: 0.02 });
 const tip  = spline({ name: 'blade tip',  points: tipPoints,  r: 0.02 });
 
 const blade = surface({
-  a: root,                 // construction curve a(t)
-  b: tip,                  // construction curve b(t)
+  a: root,                 // construction curve a(t), sampled into uniforms
+  b: tip,                  // construction curve b(t), sampled into uniforms
   thickness: 0.06,         // solidify the sheet
   samples: 64,             // rulings along t
-  // connect: (a, b, s) => …   linear by default
+  // connect is GLSL, evaluated on the GPU; linear is the default:
+  // connect: 'return mix(a, b, s);'
 });
 ```
 
-`surface` sweeps a ruling from `a(t)` to `b(t)` for every sampled `t`. The
-default `connect` is linear, so the ruling is the straight segment between the
-two points; a custom function gets `a`, `b` and `s ∈ [0, 1]` and returns the
-point at that fraction, which lets the ruling bow or twist. The sheet is then
-**solidified** into a thick ribbon (a union of capsule rulings), so it can be
-combined with the other solids.
+`surface` samples both construction curves at `samples + 1` values of `t` and
+uploads those edge points as opaque uniform arrays. The ruling interpolation is
+**not baked on the CPU**: the generated shader contains a function
 
-The two construction splines are **not rendered themselves**: they are
+```glsl
+vec3 connectN(vec3 a, vec3 b, float s) { return mix(a, b, s); }
+```
+
+and evaluates it for `s ∈ [0, 1]` inside the raymarch SDF. Pass any GLSL body
+(or a bare expression) to `connect`, for example a bowed ruling:
+
+```js
+surface({
+  a: root,
+  b: tip,
+  sSamples: 4,
+  connect: 'return mix(a, b, s) + vec3(0.0, 0.15 * sin(3.14159 * s), 0.0);',
+  margin: 0.2, // expand bounds when the connect leaves the a→b segment
+});
+```
+
+`sSamples` is the number of segments used to approximate a curved ruling in the
+shader (one for a straight line). The sheet is **solidified** into a thick
+ribbon (a union of capsule rulings), so it can be combined with other solids.
+The default linear connect is also shader code — just `mix(a, b, s)`.
+
+The two construction splines are **not rendered themselves**: they are opaque
 reference geometry, still listed in the spline dock and edited exactly like any
-other curve. Rulings are resampled **after spline overrides** and on every clock
-tick, so dragging either edge or animating its points reshapes the surface
-without recompiling. Keep `samples` dense enough that adjacent rulings overlap
-(`spacing ≲ thickness`); otherwise the ribbon can show gaps. The impeller
-example uses this to loft a twisted blade between a root edge on the disc and a
-swept tip edge.
+other curve. Their sampled edge points are refreshed **after spline overrides**
+and on every clock tick, so dragging either edge or animating its points
+reshapes the surface without recompiling the shader. Keep `samples` dense enough
+that adjacent rulings overlap (`spacing ≲ thickness`); otherwise the ribbon can
+show gaps. The impeller example lofts a twisted blade between a root edge on
+the disc and a swept tip edge.
 
 ## The DSL
 

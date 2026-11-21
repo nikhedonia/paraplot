@@ -91,10 +91,11 @@ export function describeNode(node: Node): { label: string; detail?: string } {
     }
 
     case 'surface': {
-      const rulings = node.sections?.length ?? node.samples + 1;
       return {
         label: 'surface',
-        detail: `${rulings} rulings · t ${num(node.thickness)} · ${node.sSamples + 1} across`,
+        detail: `${node.samples + 1} rulings · t ${num(node.thickness)} · ${node.sSamples} glsl step${
+          node.sSamples === 1 ? '' : 's'
+        }`,
       };
     }
 

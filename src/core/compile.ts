@@ -2,8 +2,9 @@ import * as DSL from './dsl';
 import type { Node } from './types';
 import type { ParamSchema, ParamValues } from './controls';
 import { resolveParams } from './controls';
-import { applySplineOverrides, generate } from './codegen';
+import { applySplineOverrides, collectSplines, generate } from './codegen';
 import type { CompiledProgram } from './codegen';
+import type { SplineInfo } from './types';
 
 export interface CompileOk {
   ok: true;
@@ -14,6 +15,8 @@ export interface CompileOk {
   animated: boolean;
   /** wall clock time of the pure compile */
   ms: number;
+  /** spline points before per-point overrides: the base for editing */
+  baseSplines: SplineInfo[];
 }
 
 export interface CompileErr {
@@ -131,6 +134,8 @@ export function compileScene(
       throw new Error('The scene function must return a shape (sphere, union, group, ...).');
     }
 
+    // points as generated, before the editor's per-point offsets are applied
+    const baseSplines = collectSplines(node);
     const finalNode = applySplineOverrides(node, overrides);
     const program = generate(finalNode);
 
@@ -141,6 +146,7 @@ export function compileScene(
       values: resolved,
       animated: build.length >= 2,
       ms: performance.now() - t0,
+      baseSplines,
     };
   } catch (err) {
     const e = err as Error;

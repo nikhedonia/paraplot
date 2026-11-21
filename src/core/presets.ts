@@ -298,16 +298,13 @@ export default function build(k, t) {
   const tipEdge  = spline({ name: 'blade tip',  points: edge(baseY + H, k.sweep * k.lean), r: 0.02, seg: 12 });
 
   // --- one blade: ruled surface root(t) --- tip(t), linear connect
+  // the connect is GLSL and runs on the GPU; linear is the default
   const blade = surface({
     a: rootEdge,
     b: tipEdge,
     thickness: T,
     samples: 64,
-    connect: (a, b, s) => [
-      a[0] + (b[0] - a[0]) * s,
-      a[1] + (b[1] - a[1]) * s,
-      a[2] + (b[2] - a[2]) * s,
-    ],
+    connect: 'return mix(a, b, s);',
   });
 
   const blades = paint(union(range(k.blades).map((i) =>

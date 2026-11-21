@@ -1,16 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 import { track } from '../analytics';
-import { compileScene, type CompileOk } from '../core/compile';
-import { generate, type CompiledProgram } from '../core/codegen';
-import type { Node } from '../core/types';
-import {
-  buildSceneTree,
-  findTreeNode,
-  isolateNode,
-  pruneHidden,
-  type TreeNode,
-} from '../core/sceneTree';
+import type { CompileOutcome, CompileSuccess } from '../core/compileProtocol';
+import { CompileClient } from '../core/compileClient';
+import { findTreeNode, type TreeNode } from '../core/sceneTree';
 import type { ParamValues } from '../core/controls';
 import { API_REFERENCE } from '../core/typings';
 import { DEFAULT_SETTINGS, type RenderSettings } from '../render/settings';
@@ -29,6 +22,50 @@ import {
 import { Viewport } from './Viewport';
 
 type Tab = 'tree' | 'scene' | 'shader';
+
+/**
+ * Lightweight source view shown until the user opens Monaco. It is a real
+ * textarea, so it can be read-only during the first compile and editable as
+ * soon as the result arrives, without loading the heavy editor bundle.
+ */
+function SourcePreview({
+  value,
+  note,
+  busy = false,
+  readOnly = false,
+  onChange,
+  onActivate,
+}: {
+  value: string;
+  note: string;
+  busy?: boolean;
+  readOnly?: boolean;
+  onChange?: (value: string) => void;
+  onActivate?: () => void;
+}) {
+  return (
+    <div className="source-preview">
+      <div className="source-preview-note">
+        {busy ? <span className="spinner mini" /> : <Icon name="code" size={11} />}
+        <span>{note}</span>
+        {onActivate && (
+          <button className="ghostbtn source-preview-edit" onClick={onActivate}>
+            full editor
+          </button>
+        )}
+      </div>
+      <textarea
+        className="source-preview-text"
+        value={value}
+        readOnly={readOnly}
+        onChange={(e) => onChange?.(e.target.value)}
+        spellCheck={false}
+        wrap="off"
+        aria-label="scene source"
+      />
+    </div>
+  );
+}
 type SaveState = 'saved' | 'pending' | 'saving' | 'error';
 
 function useDebounced<T>(value: T, ms: number): T {
@@ -61,6 +98,35 @@ function saveSplit(v: number): void {
   }
 }
 
+type ViewKey = 'code' | 'render' | 'inputs';
+type ViewState = Record<ViewKey, boolean>;
+const DEFAULT_VIEWS: ViewState = { code: true, render: true, inputs: true };
+
+function loadViews(): ViewState {
+  try {
+    const raw = localStorage.getItem('paraplot:views');
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<ViewState>;
+      return {
+        code: parsed.code !== false,
+        render: parsed.render !== false,
+        inputs: parsed.inputs !== false,
+      };
+    }
+  } catch {
+    /* storage may be unavailable */
+  }
+  return { ...DEFAULT_VIEWS };
+}
+
+function saveViews(v: ViewState): void {
+  try {
+    localStorage.setItem('paraplot:views', JSON.stringify(v));
+  } catch {
+    /* ignore */
+  }
+}
+
 export interface EditorProps {
   initial: ProjectRecord;
   onSaved: (project: ProjectRecord) => void;
@@ -71,22 +137,17 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
   const [name, setName] = useState(initial.name);
   const [source, setSource] = useState(initial.source);
   const [paramValues, setParamValues] = useState<ParamValues>(initial.params ?? {});
-  const [overrides, setOverrides] = useState<Record<string, number[][]>>(() => {
-    // v2 stores offsets; older records stored absolute points, migrate them
-    if ((initial.v ?? 1) >= 2) return initial.overrides ?? {};
-    const saved = initial.overrides ?? {};
-    if (Object.keys(saved).length === 0) return {};
-    const base = compileScene(initial.source, initial.params ?? {}, {});
-    if (!base.ok) return {};
-    const basePoints = new Map(base.program.splines.map((sp) => [sp.id, sp.points]));
-    const out: Record<string, number[][]> = {};
-    for (const [id, pts] of Object.entries(saved)) {
-      const b = basePoints.get(id);
-      if (!b || b.length !== pts.length) continue;
-      out[id] = pts.map((p, i) => p.map((v, k) => v - (b[i]?.[k] ?? 0)));
-    }
-    return out;
-  });
+  // v2 stores offsets. Older records store absolute points; they are migrated
+  // in the background once the first compile has reported the base splines.
+  const legacyOverrides = useRef<Record<string, number[][]> | null>(
+    (initial.v ?? 1) < 2 ? initial.overrides ?? {} : null,
+  );
+  const [overrides, setOverrides] = useState<Record<string, number[][]>>(
+    (initial.v ?? 1) >= 2 ? initial.overrides ?? {} : {},
+  );
+  const migratedLegacy = useRef(
+    !legacyOverrides.current || Object.keys(legacyOverrides.current).length === 0,
+  );
   const [selectedSpline, setSelectedSpline] = useState<string | null>(null);
   const [splinePlacement, setSplinePlacement] = useState<SplinePlacement>('dock');
   const [splineView, setSplineView] = useState<SplineViewMode>('split');
@@ -117,50 +178,79 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
 
   /* editor / viewport split */
   const [split, setSplit] = useState<number>(loadSplit);
+  const [views, setViews] = useState<ViewState>(loadViews);
+  const [chromeReady, setChromeReady] = useState(false);
+  useEffect(() => {
+    saveViews(views);
+  }, [views]);
   const workspaceRef = useRef<HTMLElement | null>(null);
   const splitDrag = useRef(false);
 
   const debouncedSource = useDebounced(source, 110);
-  const compiled = useMemo(
-    () => compileScene(debouncedSource, paramValues, overrides),
-    [debouncedSource, paramValues, overrides],
+  const [client] = useState(() => new CompileClient());
+  useEffect(() => () => client.dispose(), [client]);
+
+  const [compiled, setCompiled] = useState<CompileOutcome | null>(null);
+  const [compiling, setCompiling] = useState(true);
+  const requestSeq = useRef(0);
+  const filters = useMemo(
+    () => ({ hidden: [...hidden], isolated }),
+    [hidden, isolated],
   );
 
-  /** apply visibility + solo filters to a freshly compiled program */
-  const applyFilters = useCallback(
-    (base: CompiledProgram): CompiledProgram | null => {
-      let root: Node = base.scene;
-      if (isolated) {
-        const solo = isolateNode(root, isolated);
-        if (solo) root = solo;
-      }
-      if (hidden.size > 0) {
-        const pruned = pruneHidden(root, hidden);
-        if (!pruned) return null;
-        root = pruned;
-      }
-      return root === base.scene ? base : generate(root);
-    },
-    [isolated, hidden],
-  );
-
-  /** the animated clock calls this every frame; it never touches react state */
-  const animate = useCallback(
-    (time: number) => {
-      const r = compileScene(debouncedSource, paramValues, overrides, time);
-      if (!r.ok) return { program: null, error: r.error };
-      return { program: applyFilters(r.program) };
-    },
-    [debouncedSource, paramValues, overrides, applyFilters],
-  );
-
-  const lastGood = useRef<CompileOk | null>(null);
+  // compilation happens in a worker; this effect only swaps in the result
   useEffect(() => {
-    if (compiled.ok) lastGood.current = compiled;
+    const seq = ++requestSeq.current;
+    setCompiling(true);
+    let cancelled = false;
+    void client
+      .compile({ source: debouncedSource, values: paramValues, overrides, filters })
+      .then((res) => {
+        if (cancelled || seq !== requestSeq.current || !res) return;
+        setCompiled(res);
+        setCompiling(false);
+      })
+      .catch((err: unknown) => {
+        if (cancelled || seq !== requestSeq.current) return;
+        setCompiled({
+          ok: false,
+          error: (err as Error)?.message ?? String(err),
+          schema: {},
+          ms: 0,
+        });
+        setCompiling(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [client, debouncedSource, paramValues, overrides, filters]);
+
+  const lastGood = useRef<CompileSuccess | null>(null);
+  useEffect(() => {
+    if (compiled?.ok) lastGood.current = compiled;
+  }, [compiled]);
+
+  // v1 projects stored absolute spline points: turn them into offsets once
+  // the worker has compiled the unedited base splines
+  useEffect(() => {
+    if (!compiled?.ok || migratedLegacy.current) return;
+    migratedLegacy.current = true;
+    const saved = legacyOverrides.current;
+    legacyOverrides.current = null;
+    if (!saved) return;
+    const basePoints = new Map(compiled.baseSplines.map((sp) => [sp.id, sp.points]));
+    const out: Record<string, number[][]> = {};
+    for (const [id, pts] of Object.entries(saved)) {
+      const b = basePoints.get(id);
+      if (!b || b.length !== pts.length) continue;
+      out[id] = pts.map((p, i) => p.map((v, k) => v - (b[i]?.[k] ?? 0)));
+    }
+    if (Object.keys(out).length > 0) setOverrides(out);
   }, [compiled]);
 
   const hadCompileError = useRef(false);
   useEffect(() => {
+    if (!compiled) return;
     if (!compiled.ok) {
       if (!hadCompileError.current) {
         const kind = /unexpected token|syntax/i.test(compiled.error)
@@ -176,16 +266,24 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
     }
   }, [compiled]);
 
-  const good = compiled.ok ? compiled : lastGood.current;
-  const fullProgram = good?.program ?? null;
-  const displayProgram = useMemo(
-    () => (fullProgram ? applyFilters(fullProgram) : null),
-    [fullProgram, applyFilters],
-  );
-  const scene = fullProgram?.scene ?? null;
-  const tree = useMemo(() => (scene ? buildSceneTree(scene) : null), [scene]);
-  const schema = good?.schema ?? {};
+  const good = compiled?.ok ? compiled : lastGood.current;
+  const displayProgram = good?.program ?? null;
+  const splines = good?.splines ?? [];
+  const tree = good?.tree ?? null;
+  const schema = compiled?.schema ?? good?.schema ?? {};
   const values = good?.values ?? {};
+
+  // the animated clock asks the worker for the next scene; it never compiles
+  // on the main thread and never touches react state
+  const animate = useCallback(
+    async (time: number) => {
+      const res = await client.animate(time);
+      if (!res) return { program: null };
+      if (!res.ok) return { program: null, error: res.error };
+      return { program: res.program };
+    },
+    [client],
+  );
 
   const nodeCount = useMemo(() => {
     if (!tree) return 0;
@@ -199,17 +297,17 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
   }, [tree]);
 
   useEffect(() => {
-    const ids = fullProgram?.splines.map((s) => s.id) ?? [];
+    const ids = splines.map((s) => s.id);
     if (!selectedSpline || !ids.includes(selectedSpline)) {
       setSelectedSpline(ids[0] ?? null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fullProgram]);
+  }, [splines]);
 
   // drop a solo target that no longer exists
   useEffect(() => {
-    if (isolated && scene && !isolateNode(scene, isolated)) setIsolated(null);
-  }, [scene, isolated]);
+    if (isolated && tree && !findTreeNode(tree, isolated)) setIsolated(null);
+  }, [tree, isolated]);
 
   // forget hidden ids that disappeared from the tree
   useEffect(() => {
@@ -374,6 +472,14 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
     setFrameSignal((n) => n + 1);
   }, []);
 
+  const toggleView = useCallback((key: ViewKey) => {
+    setViews((prev) => {
+      const next = { ...prev, [key]: !prev[key] };
+      track('view_toggle', { view: key, visible: next[key] });
+      return next;
+    });
+  }, []);
+
   const placeSpline = useCallback((next: SplinePlacement) => {
     if (splinePlacementRef.current === next) return;
     track('spline_workspace', { placement: next });
@@ -407,36 +513,20 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
   }, []);
 
   // spline edits are stored as offsets from the generated curve, so animated
-  // splines keep moving around the edited shape
-  const baseCache = useRef<{
-    source: string;
-    values: ParamValues;
-    points: Map<string, number[][]>;
-  } | null>(null);
+  // splines keep moving around the edited shape. The base points come from the
+  // compile worker, so dragging never compiles on the main thread.
+  const basePoints = useRef<Map<string, number[][]>>(new Map());
+  useEffect(() => {
+    if (!compiled?.ok) return;
+    basePoints.current = new Map(compiled.baseSplines.map((sp) => [sp.id, sp.points]));
+  }, [compiled]);
 
-  const baseSplinePoints = useCallback(() => {
-    const cached = baseCache.current;
-    if (cached && cached.source === debouncedSource && cached.values === paramValues) {
-      return cached.points;
-    }
-    const base = compileScene(debouncedSource, paramValues, {});
-    const points = new Map<string, number[][]>();
-    if (base.ok) {
-      for (const sp of base.program.splines) points.set(sp.id, sp.points);
-    }
-    baseCache.current = { source: debouncedSource, values: paramValues, points };
-    return points;
-  }, [debouncedSource, paramValues]);
-
-  const setSplinePoints = useCallback(
-    (id: string, points: number[][]) => {
-      const base = baseSplinePoints().get(id);
-      if (!base || base.length !== points.length) return;
-      const offsets = points.map((p, i) => p.map((v, k) => v - (base[i]?.[k] ?? 0)));
-      setOverrides((o) => ({ ...o, [id]: offsets }));
-    },
-    [baseSplinePoints],
-  );
+  const setSplinePoints = useCallback((id: string, points: number[][]) => {
+    const base = basePoints.current.get(id);
+    if (!base || base.length !== points.length) return;
+    const offsets = points.map((p, i) => p.map((v, k) => v - (base[i]?.[k] ?? 0)));
+    setOverrides((o) => ({ ...o, [id]: offsets }));
+  }, []);
 
   const resetSpline = useCallback((id: string) => {
     setOverrides((o) => {
@@ -501,8 +591,11 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
     saveSplit(next);
   };
 
-  const compileMs = compiled.ms < 1 ? compiled.ms.toFixed(2) : compiled.ms.toFixed(1);
-  const stale = !compiled.ok && !!lastGood.current;
+  const compileMs = (compiled?.ms ?? 0) < 1
+    ? (compiled?.ms ?? 0).toFixed(2)
+    : (compiled?.ms ?? 0).toFixed(1);
+  const stale = !!compiled && !compiled.ok && !!lastGood.current;
+  const compileFailed = !!compiled && !compiled.ok;
   const saveLabel =
     saveState === 'saved'
       ? 'saved'
@@ -512,10 +605,19 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
           ? 'saving'
           : 'save failed';
   const everythingHidden = hidden.size > 0 && !displayProgram;
+  const initialCompiling = compiling && !compiled;
+  const nothingVisible = !views.code && !views.render && !views.inputs;
+  const bootLabel = compiling
+    ? 'compiling scene'
+    : compileFailed && !lastGood.current
+      ? 'the scene has errors'
+      : displayProgram
+        ? 'preparing the viewport'
+        : 'waiting for the scene';
 
   const renderSplineWorkspace = (placement: 'editor' | 'viewport') => (
     <SplineWorkspace
-      splines={fullProgram?.splines ?? []}
+      splines={splines}
       selected={selectedSpline}
       comb={comb}
       combDensity={combDensity}
@@ -574,6 +676,36 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
 
         <div className="topgap" />
 
+        <div className="topseg viewseg" role="group" aria-label="Visible views">
+          <span className="topseg-label">views</span>
+          <div className="segmented small">
+            <button
+              className={views.code ? 'active' : ''}
+              onClick={() => toggleView('code')}
+              title={views.code ? 'Hide the code pane' : 'Show the code pane'}
+              aria-pressed={views.code}
+            >
+              <Icon name="code" size={12} />
+            </button>
+            <button
+              className={views.render ? 'active' : ''}
+              onClick={() => toggleView('render')}
+              title={views.render ? 'Hide the 3D viewport' : 'Show the 3D viewport'}
+              aria-pressed={views.render}
+            >
+              <Icon name="cube" size={12} />
+            </button>
+            <button
+              className={views.inputs ? 'active' : ''}
+              onClick={() => toggleView('inputs')}
+              title={views.inputs ? 'Hide the inputs dock' : 'Show the inputs dock'}
+              aria-pressed={views.inputs}
+            >
+              <Icon name="sliders" size={12} />
+            </button>
+          </div>
+        </div>
+
         <div className="topseg" role="group" aria-label="Spline editor position">
           <span className="topseg-label">splines</span>
           <div className="segmented small">
@@ -604,10 +736,10 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
           </div>
         </div>
 
-        <div className={`status ${compiled.ok ? 'ok' : 'bad'}`}>
-          <span className="dot" />
-          {compiled.ok ? 'compiled' : 'error'}
-          <span className="status-num">{compileMs} ms</span>
+        <div className={`status ${compiling ? 'busy' : compiled?.ok ? 'ok' : compiled ? 'bad' : 'busy'}`}>
+          {compiling ? <span className="spinner mini" aria-hidden="true" /> : <span className="dot" />}
+          {compiling ? 'compiling' : compiled?.ok ? 'compiled' : compiled ? 'error' : 'starting'}
+          {!compiling && compiled?.ok && <span className="status-num">{compileMs} ms</span>}
         </div>
         {displayProgram && (
           <div className="status dims">
@@ -622,10 +754,18 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
       </header>
 
       <main
-        className="workspace"
+        className={`workspace ${views.code ? '' : 'no-code'} ${views.render ? '' : 'no-render'} ${
+          views.inputs ? '' : 'no-inputs'
+        }`}
         ref={workspaceRef}
         style={{ ['--split' as string]: `${split}%` }}
       >
+        {nothingVisible && (
+          <div className="workspace-empty">
+            <Icon name="cube" size={22} />
+            <span>All views are hidden — use the view toggles in the top bar.</span>
+          </div>
+        )}
         <section className="pane editor-pane">
           <div className={`editor-shell ${splinePlacement === 'editor' ? 'is-hidden' : ''}`}>
           <div className="tabs">
@@ -637,11 +777,23 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
               <Icon name="tree" size={12} />
               components
             </button>
-            <button className={`tab ${tab === 'scene' ? 'active' : ''}`} onClick={() => setTab('scene')}>
+            <button
+              className={`tab ${tab === 'scene' ? 'active' : ''}`}
+              onClick={() => {
+                setTab('scene');
+                setChromeReady(true);
+              }}
+            >
               <span className="filedot js" />
               scene.js
             </button>
-            <button className={`tab ${tab === 'shader' ? 'active' : ''}`} onClick={() => setTab('shader')}>
+            <button
+              className={`tab ${tab === 'shader' ? 'active' : ''}`}
+              onClick={() => {
+                setTab('shader');
+                setChromeReady(true);
+              }}
+            >
               <span className="filedot glsl" />
               shader.glsl
             </button>
@@ -668,6 +820,11 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
                   onSolo={solo}
                   onClear={clearFilters}
                 />
+              ) : compiling ? (
+                <div className="tree-empty tree-busy">
+                  <span className="spinner mini" />
+                  compiling the scene — the tree appears when it is ready.
+                </div>
               ) : (
                 <div className="tree-empty">
                   No components to show. Fix the scene errors and the tree will appear here.
@@ -676,21 +833,48 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
             </div>
 
             <div className={`editor-layer ${tab === 'scene' ? 'visible' : ''}`}>
-              <CodeEditor
-                value={source}
-                onChange={setSource}
-                active={tab === 'scene' && splinePlacement !== 'editor'}
-                path="scene.js"
-              />
+              {tab === 'scene' &&
+                (chromeReady ? (
+                  <CodeEditor
+                    value={source}
+                    onChange={setSource}
+                    readOnly={initialCompiling}
+                    active={splinePlacement !== 'editor'}
+                    path="scene.js"
+                  />
+                ) : (
+                  <SourcePreview
+                    value={source}
+                    busy={initialCompiling}
+                    readOnly={initialCompiling}
+                    onChange={setSource}
+                    note={
+                      initialCompiling
+                        ? 'compiling the scene — the source is read-only until it is ready'
+                        : 'basic source editor — open the full editor for Monaco'
+                    }
+                    onActivate={() => setChromeReady(true)}
+                  />
+                ))}
             </div>
             <div className={`editor-layer ${tab === 'shader' ? 'visible' : ''}`}>
-              <CodeEditor
-                value={displayProgram?.glsl ?? '// compile a scene to see the generated shader'}
-                readOnly
-                language="cpp"
-                active={tab === 'shader' && splinePlacement !== 'editor'}
-                path="shader.glsl"
-              />
+              {tab === 'shader' &&
+                (chromeReady ? (
+                  <CodeEditor
+                    value={displayProgram?.glsl ?? '// compile a scene to see the generated shader'}
+                    readOnly
+                    language="cpp"
+                    active={splinePlacement !== 'editor'}
+                    path="shader.glsl"
+                  />
+                ) : (
+                  <SourcePreview
+                    value={displayProgram?.glsl ?? '// compile a scene to see the generated shader'}
+                    readOnly
+                    note="read-only generated GLSL"
+                    onActivate={() => setChromeReady(true)}
+                  />
+                ))}
             </div>
           </div>
 
@@ -709,15 +893,15 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
                   : 'no program'}
             </span>
             <span className="grow" />
-            <span className={compiled.ok ? 'ok-text' : 'bad-text'}>
-              {compiled.ok ? 'scene is valid' : 'scene has errors'}
+            <span className={compiling ? 'busy-text' : compiled?.ok ? 'ok-text' : 'bad-text'}>
+              {compiling ? 'compiling…' : compiled?.ok ? 'scene is valid' : 'scene has errors'}
             </span>
           </div>
           </div>
 
           {splinePlacement === 'editor' && renderSplineWorkspace('editor')}
 
-          {!compiled.ok && (
+          {compileFailed && compiled && (
             <div className="errorbar">
               <div className="errorbar-head">
                 <span>compile error</span>
@@ -765,8 +949,11 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
             filterLabel={filterLabel}
             onClearFilter={clearFilters}
             emptyLabel={everythingHidden ? 'Everything is hidden — clear the filters to see the scene.' : null}
-            hasSplines={(fullProgram?.splines.length ?? 0) > 0}
-            paused={splinePlacement === 'viewport'}
+            hasSplines={splines.length > 0}
+            paused={splinePlacement === 'viewport' || !views.render}
+            preview={initial.thumbnail ?? null}
+            bootLabel={bootLabel}
+            bootFailed={!!compiled && !compiled.ok && !good}
           />
           {splinePlacement === 'viewport' && renderSplineWorkspace('viewport')}
           {renderError && (
@@ -779,14 +966,14 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
           </div>
           <div className="dock">
             <ParamPanel
-              schema={compiled.ok ? compiled.schema : schema}
+              schema={compiled?.schema ?? schema}
               values={values}
               onChange={setParamValues}
               onReset={() => setParamValues({})}
             />
             {splinePlacement === 'dock' ? (
               <SplineEditor
-                splines={fullProgram?.splines ?? []}
+                splines={splines}
                 selected={selectedSpline}
                 onSelect={setSelectedSpline}
                 onChange={setSplinePoints}
@@ -804,7 +991,7 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
               <div className="dock-panel splines dock-detached">
                 <header className="dock-head">
                   <span className="dock-title">splines</span>
-                  <span className="dock-count">{fullProgram?.splines.length ?? 0}</span>
+                  <span className="dock-count">{splines.length}</span>
                   <button
                     className="ghostbtn"
                     onClick={() => placeSpline('dock')}

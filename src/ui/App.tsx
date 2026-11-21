@@ -93,7 +93,10 @@ export function App() {
     async (source?: string, preferredName?: string, example?: Preset) => {
       const list = projects ?? [];
       const name = uniqueName(preferredName ?? `Untitled ${list.length + 1}`, list);
-      const record = newProject(name, source);
+      // opening an example starts with its rendered card image as the boot
+      // preview; the editor replaces it with a fresh snapshot once settled
+      const preview = example ? `${import.meta.env.BASE_URL}examples/${example.id}.jpg` : undefined;
+      const record = newProject(name, source, preview);
       await saveProject(record);
       setProjects((prev) => [record, ...(prev ?? [])]);
       track('project_create', {

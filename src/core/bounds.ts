@@ -101,15 +101,13 @@ export function boundsOf(node: Node): Aabb {
     }
 
     case 'surface': {
-      const resolved = node.sections ? node : (resolveSurfaces(node) as typeof node);
-      const r = node.thickness * 0.5;
+      const resolved = node.edges ? node : (resolveSurfaces(node) as typeof node);
+      const r = node.thickness * 0.5 + node.margin;
       const b = emptyAabb();
-      for (const ruling of resolved.sections ?? []) {
-        for (const p of ruling) {
-          for (let i = 0; i < 3; i++) {
-            b.min[i] = Math.min(b.min[i], p[i] - r);
-            b.max[i] = Math.max(b.max[i], p[i] + r);
-          }
+      for (const p of [...(resolved.edges?.a ?? []), ...(resolved.edges?.b ?? [])]) {
+        for (let i = 0; i < 3; i++) {
+          b.min[i] = Math.min(b.min[i], p[i] - r);
+          b.max[i] = Math.max(b.max[i], p[i] + r);
         }
       }
       return isEmptyAabb(b) ? box([-1, -1, -1], [1, 1, 1]) : b;

@@ -3,7 +3,7 @@ import { sampleProfile, sampleSpline } from './spline';
 import { compileExpression } from './expr';
 import { resolveSplinePointRefs } from './splineRefs';
 import { boundsOf } from './bounds';
-import { resolveSurfaces, surfaceSegments } from './surface';
+import { resolveSurfaces } from './surface';
 import { fragmentShader } from '../render/glsl';
 
 export interface CompiledProgram {
@@ -32,6 +32,7 @@ class Gen {
   /** nodes are emitted once per identity, so reused subgraphs share code/uniforms */
   private emitted = new Map<Node, string>();
   private id = 0;
+  private connectId = 0;
   private nodes = 0;
   private usesTime = false;
 
@@ -182,20 +183,33 @@ ${sig} {
       }
 
       case 'surface': {
-        const segments = surfaceSegments(node);
-        if (segments.length === 0) return `${sig} { return vec2(1e6, 0.0); }`;
-        const off = this.values.length;
-        for (const [a, b] of segments) {
-          this.values.push(a[0], a[1], a[2], b[0], b[1], b[2]);
-        }
-        const r = this.f(node.thickness * 0.5);
-        // one loop over the rulings keeps the shader small even for dense sheets
+        const edges = node.edges;
+        if (!edges || edges.a.length === 0) return `${sig} { return vec2(1e6, 0.0); }`;
+        const offA = this.values.length;
+        for (const p of edges.a) this.values.push(p[0], p[1], p[2]);
+        const offB = this.values.length;
+        for (const p of edges.b) this.values.push(p[0], p[1], p[2]);
+        const rr = this.f(node.thickness * 0.5);
+        const rulings = edges.a.length;
+        const across = Math.max(1, node.sSamples);
+        const connectName = `connect${this.connectId++}`;
+        // a user-supplied GLSL body/expression: interpolation happens on the GPU
+        if (/\bu_time\b/.test(node.connect)) this.usesTime = true;
+        const body = /\breturn\b/.test(node.connect) ? node.connect : `return ${node.connect};`;
+        this.fns.push(`vec3 ${connectName}(vec3 a, vec3 b, float s) { ${body} }`);
         return `
 ${sig} {
-  float rr = ${r};
+  float rr = ${rr};
   float d = 1e12;
-  for (int i = 0; i < ${segments.length}; i++) {
-    d = min(d, sdCapsule(p, v3(${off} + 6 * i), v3(${off} + 6 * i + 3), rr));
+  for (int i = 0; i < ${rulings}; i++) {
+    vec3 a = v3(${offA} + 3 * i);
+    vec3 b = v3(${offB} + 3 * i);
+    vec3 p0 = ${connectName}(a, b, 0.0);
+    for (int j = 1; j <= ${across}; j++) {
+      vec3 p1 = ${connectName}(a, b, float(j) / float(${across}));
+      d = min(d, sdCapsule(p, p0, p1, rr));
+      p0 = p1;
+    }
   }
   return vec2(d, 0.0);
 }`.trim();
@@ -369,7 +383,7 @@ export function applySplineOverrides(root: Node, overrides: Record<string, numbe
       const b = walk(n.b);
       if (a === n.a && b === n.b) return n;
       // construction curves changed: the rulings must be resampled
-      const next = { ...n, a, b, sections: undefined };
+      const next = { ...n, a, b, edges: undefined };
       replaced.set(n, next);
       return next;
     }

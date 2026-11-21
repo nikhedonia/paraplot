@@ -216,9 +216,15 @@ export interface SurfaceNode {
   thickness: number;
   /** rulings along t */
   samples: number;
-  /** subdivisions of the connect across each ruling */
+  /** subdivisions of the ruling evaluated in the shader */
   sSamples: number;
-  connect: (a: Vec3, b: Vec3, s: number) => Vec3;
-  /** filled by the compiler after spline overrides: one polyline per ruling */
-  sections?: Vec3[][];
+  /**
+   * GLSL body of `vec3 connect(vec3 a, vec3 b, float s)`, evaluated on the
+   * GPU. May be an expression (`mix(a, b, s)`) or a full body with `return`.
+   */
+  connect: string;
+  /** extra bound margin for connects that leave the a/b segment */
+  margin: number;
+  /** filled by the compiler after spline overrides: sampled edge curves */
+  edges?: { a: Vec3[]; b: Vec3[] };
 }
