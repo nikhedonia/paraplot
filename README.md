@@ -350,6 +350,32 @@ header):
 
 Both sliders drive the 2D and 3D combs together.
 
+## Deploying
+
+Pushes to `main` (or `master`) deploy through GitHub Actions
+(`.github/workflows/deploy.yml`) to GitHub Pages at
+**https://nikhedonia.net/paraplot/**.
+
+- The workflow builds with `VITE_BASE=/paraplot/`, so the HTML, JS/CSS, Monaco
+  and render workers, and the example images all resolve under the `/paraplot/`
+  sub-path. The app uses hash routes (`#/p/<id>`), so no server rewrites are
+  needed.
+- Repository **Settings → Pages → Build and deployment → Source** must be
+  **GitHub Actions**. The workflow enables Pages on its first run
+  (`configure-pages` with `enablement: true`).
+- **`nikhedonia.net` must be the custom domain of the user site
+  (`nikhedonia.github.io`)**, not of this project repository. GitHub then serves
+  project sites under `https://nikhedonia.net/<repo>/`, which is why the base
+  path is `/paraplot/`. (Setting the custom domain directly on this repository
+  would serve it at the domain root instead and the `/paraplot/` base would be
+  wrong.) No `CNAME` file is needed in this repo for Actions deployments.
+- The repository must be named `paraplot` (the Pages path). If you rename it,
+  update `VITE_BASE` in the workflow and the URL. If you instead serve the site
+  at the domain root, set `VITE_BASE: /`.
+- Enable **Enforce HTTPS** in the Pages settings once the certificate is ready.
+- Locally `npm run build` uses `/`; to reproduce the deployed asset paths run
+  `VITE_BASE=/paraplot/ npm run build` and serve `dist` under `/paraplot/`.
+
 ## Performance
 
 The viewport only draws when something actually changes:
