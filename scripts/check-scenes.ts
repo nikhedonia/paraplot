@@ -32,7 +32,7 @@ for (const preset of PRESETS) {
   ok(p.values.length >= p.stats.values, 'value pool matches');
   ok(p.materials.length >= 1, `${p.materials.length} materials`);
   ok(
-    base.animated === (preset.id === 'orbit' || preset.id === 'dog'),
+    base.animated === (preset.id === 'orbit' || preset.id === 'dog' || preset.id === 'impeller'),
     `animated flag is ${base.animated}`,
   );
   ok(sampleSpline([[0, 0, 0], [1, 1, 0], [2, 0, 0]], false, 8).length > 3, 'spline sampling');
@@ -87,7 +87,7 @@ for (const preset of PRESETS) {
   if (at1.ok) {
     ok(at1.program.glsl === p.glsl, 'time does not change the shader text');
     const moved = at1.program.values.some((v, i) => v !== p.values[i]);
-    if (preset.id === 'orbit' || preset.id === 'dog') {
+    if (preset.id === 'orbit' || preset.id === 'dog' || preset.id === 'impeller') {
       ok(moved, 'build(k, t) responds to time');
     }
     if (preset.id === 'gyroid') {

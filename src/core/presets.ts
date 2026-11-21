@@ -263,12 +263,101 @@ export default function build(k, t) {
 }
 `;
 
+
+const IMPELLER = String.raw`// paraplot — a centrifugal impeller
+// Swept blades are extruded profiles; the scene clock spins the rotor.
+
+export const params = {
+  blades:    int(7,    { min: 3, max: 12, label: 'blades' }),
+  radius:    num(1.25, { min: 0.7, max: 1.7, step: 0.01,  label: 'radius' }),
+  sweep:     num(52,   { min: 0, max: 90, step: 0.5,    label: 'sweep', unit: 'deg' }),
+  height:    num(0.50, { min: 0.15, max: 0.9, step: 0.01, label: 'blade height' }),
+  thickness: num(0.06, { min: 0.025, max: 0.14, step: 0.002, label: 'blade thickness' }),
+  hub:       num(0.34, { min: 0.18, max: 0.5, step: 0.005, label: 'hub radius' }),
+  spin:      num(0.12, { min: 0.0, max: 1.0, step: 0.005, label: 'spin', unit: 'rev/s' }),
+  steel:     color('#b9c2c9', 'steel'),
+  brass:     color('#c08a4a', 'blades'),
+};
+
+export default function build(k, t) {
+  const R = k.radius, hubR = k.hub, H = k.height, T = k.thickness;
+  const discH = 0.14;
+  const baseY = discH;
+
+  // --- one blade: a thin curved band following a backward spiral
+  const samples = 14;
+  const mid = range(samples).map((i) => {
+    const u = i / (samples - 1);
+    const r = lerp(hubR - 0.03, R, u);
+    const a = rad(k.sweep) * Math.pow(u, 1.25);
+    return [Math.cos(a) * r, Math.sin(a) * r];
+  });
+
+  const left = [], right = [];
+  for (let i = 0; i < samples; i++) {
+    const p = mid[i];
+    const a = mid[Math.max(0, i - 1)];
+    const b = mid[Math.min(samples - 1, i + 1)];
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    const l = Math.hypot(dx, dy) || 1;
+    const nx = -dy / l;
+    const ny = dx / l;
+    left.push([p[0] + nx * T * 0.5, p[1] + ny * T * 0.5]);
+    right.push([p[0] - nx * T * 0.5, p[1] - ny * T * 0.5]);
+  }
+  const profile = left.concat(right.reverse());
+
+  const blade = rotate([-90, 0, 0],
+    translate([0, 0, baseY + H * 0.5],
+      extrude({
+        points: profile,
+        h: H,
+        round: Math.min(0.018, T * 0.3),
+        closed: true,
+        seg: 1,
+      })));
+
+  const blades = paint(union(range(k.blades).map((i) =>
+    rotate([0, (i * 360) / k.blades, 0], blade))), k.brass);
+
+  // --- disc, rim and lathe hub
+  const disc = paint(translate([0, discH * 0.5, 0],
+    cylinder({ r: R + 0.12, h: discH, round: 0.04 })), k.steel);
+
+  const rim = paint(translate([0, discH, 0],
+    torus({ R: R + 0.1, r: 0.045 })), k.steel);
+
+  const hubTop = discH + H + 0.12;
+  const hub = paint(lathe({
+    name: 'hub',
+    points: [
+      [0, discH * 0.5],
+      [hubR + 0.06, discH * 0.5],
+      [hubR, discH * 0.7],
+      [hubR, discH + H * 0.6],
+      [hubR * 0.8, hubTop - 0.05],
+      [hubR * 0.45, hubTop],
+      [0, hubTop + 0.02],
+    ],
+    seg: 10,
+  }), k.steel);
+
+  // --- assemble and bore the shaft hole
+  const body = union(disc, rim, hub, blades);
+  const drilled = subtract(body, cylinder({ r: hubR * 0.32, h: 4, round: 0.01 }));
+
+  return rotate([0, t * k.spin * 360, 0], drilled);
+}
+`;
+
 export const PRESETS: Preset[] = [
   { id: 'bracket', name: 'Handle bracket', blurb: 'groups · set ops · splines', source: BRACKET },
   { id: 'vase', name: 'Lathe vessel', blurb: 'revolve · profiles · subtract', source: VASE },
   { id: 'gyroid', name: 'Gyroid lattice', blurb: 'implicit equation · shader clock', source: GYROID },
   { id: 'orbit', name: 'Orbital rig', blurb: 'animated · build(k, t)', source: ORBIT },
   { id: 'dog', name: 'Wagging dog', blurb: 'animated · spline tail', source: DOG },
+  { id: 'impeller', name: 'Impeller', blurb: 'swept blades · animated', source: IMPELLER },
 ];
 
 export const DEFAULT_SOURCE = BRACKET;
