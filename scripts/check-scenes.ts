@@ -332,6 +332,22 @@ const jsConnect = compileScene(
 );
 ok(!jsConnect.ok && /must be GLSL/.test(jsConnect.error), 'surface() connect must be GLSL code');
 
+const TS_SCENE = String.raw`
+type Params = { size: number };
+export const params = { size: num(1.1, { min: 0.2, max: 2 }) };
+export default defineScene(params, (k: Params) => {
+  const size: number = k.size;
+  return sphere({ r: size as number });
+});
+`;
+const tsScene = compileScene(TS_SCENE, {}, {});
+ok(tsScene.ok, `typescript scene compiles${tsScene.ok ? '' : `: ${tsScene.error}`}`);
+if (tsScene.ok) {
+  const sphereNode = findNodes(tsScene.program.scene, (n) => n.kind === 'sphere')[0] as any;
+  ok(Math.abs((sphereNode?.r ?? 0) - 1.1) < 1e-3, 'typescript annotations are stripped at runtime');
+  ok(tsScene.values.size === 1.1, 'typed params resolve to values');
+}
+
 const REPEAT_SRC = String.raw`
 export default function build() {
   return polarRepeat(

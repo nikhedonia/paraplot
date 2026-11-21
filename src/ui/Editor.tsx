@@ -205,7 +205,7 @@ function EditorImpl({ initial, onSaved, onExit }: EditorProps) {
   const [compiling, setCompiling] = useState(true);
   const requestSeq = useRef(0);
 
-  // fetch Monaco while the GPU is already busy: opening the full editor should
+  // fetch Monaco while the GPU is already busy: opening the typed editor should
   // not pay for a multi-megabyte download at the moment of the click
   const prefetchMonaco = useCallback(() => {
     if (monacoPrefetchStarted) return;
@@ -821,8 +821,8 @@ function EditorImpl({ initial, onSaved, onExit }: EditorProps) {
                 openMonaco('scene');
               }}
             >
-              <span className="filedot js" />
-              scene.js
+              <span className="filedot ts" />
+              scene.ts
             </button>
             <button
               className={`tab ${tab === 'shader' ? 'active' : ''}`}
@@ -839,7 +839,7 @@ function EditorImpl({ initial, onSaved, onExit }: EditorProps) {
               {tab === 'tree'
                 ? 'visibility · solo'
                 : tab === 'scene'
-                  ? 'pure · javascript dsl'
+                  ? 'typed · typescript dsl'
                   : 'generated · read only'}
             </span>
           </div>
@@ -875,8 +875,9 @@ function EditorImpl({ initial, onSaved, onExit }: EditorProps) {
                   value={source}
                   onChange={setSource}
                   readOnly={initialCompiling}
+                  language="typescript"
                   active={splinePlacement !== 'editor' && tab === 'scene'}
-                  path="scene.js"
+                  path="scene.ts"
                 />
               ) : (
                 <SourcePreview
@@ -884,10 +885,11 @@ function EditorImpl({ initial, onSaved, onExit }: EditorProps) {
                   busy={initialCompiling}
                   readOnly={initialCompiling}
                   onChange={setSource}
+                  language="typescript"
                   note={
                     initialCompiling
                       ? 'compiling the scene — the source is read-only until it is ready'
-                      : 'basic source editor — open the full editor for Monaco'
+                      : 'basic source editor — open the typed editor for type hints'
                   }
                   onActivate={() => openMonaco('scene')}
                 />
@@ -910,7 +912,7 @@ function EditorImpl({ initial, onSaved, onExit }: EditorProps) {
 
           <div className="editor-status">
             <span>
-              {tab === 'tree' ? 'components' : tab === 'scene' ? 'javascript' : 'glsl es 3.00'}
+              {tab === 'tree' ? 'components' : tab === 'scene' ? 'typescript' : 'glsl es 3.00'}
             </span>
             <span className="sep">·</span>
             <span>

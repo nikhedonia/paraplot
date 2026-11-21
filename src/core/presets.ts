@@ -23,6 +23,7 @@ export const params = {
   drill:  bool(true, 'drill holes'),
 };
 
+/** @param {typeof params} k */
 export default function build(k) {
   const W = k.span, D = k.depth, T = k.plate;
   const end = W / 2 - 0.12;
@@ -88,6 +89,7 @@ export const params = {
   band:   num(0.16, { min: 0.0, max: 0.4, step: 0.005, label: 'band' }),
 };
 
+/** @param {typeof params} k */
 export default function build(k) {
   const h = k.height, w = k.width, n = k.neck;
 
@@ -137,6 +139,7 @@ export const params = {
   tint:   color('#7fa6a0', 'tint'),
 };
 
+/** @param {typeof params} k */
 export default function build(k) {
   const f = k.freq;
 
@@ -172,6 +175,10 @@ export const params = {
   steel:  color('#aebbc7', 'frame'),
 };
 
+/**
+ * @param {typeof params} k
+ * @param {number} t
+ */
 export default function build(k, t) {
   const phase = t * k.speed * TAU;
 
@@ -210,6 +217,10 @@ export const params = {
   cream:  color('#efd9b4', 'tail tip'),
 };
 
+/**
+ * @param {typeof params} k
+ * @param {number} t
+ */
 export default function build(k, t) {
   // --- tail: a spline with a travelling wave, anchored to its own tip
   const tailPoints = range(6).map((i) => {
@@ -281,6 +292,10 @@ export const params = {
   brass:     color('#c08a4a', 'blades'),
 };
 
+/**
+ * @param {typeof params} k
+ * @param {number} t
+ */
 export default function build(k, t) {
   const R = k.radius, hubR = k.hub, H = k.height, T = k.thickness;
   const discH = 0.14;

@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useMemo, useRef } from 'react';
 import { Icon } from './Icon';
 
 type TokenKind =
@@ -23,6 +23,9 @@ const JS_KEYWORDS = new Set([
   'continue', 'new', 'class', 'extends', 'export', 'default', 'import', 'from', 'async', 'await',
   'try', 'catch', 'throw', 'typeof', 'instanceof', 'in', 'of', 'delete', 'void', 'yield', 'this',
   'true', 'false', 'null', 'undefined',
+  // TypeScript scene keywords
+  'interface', 'type', 'implements', 'extends', 'declare', 'readonly', 'enum',
+  'namespace', 'abstract', 'public', 'private', 'protected', 'satisfies', 'as',
 ]);
 
 const GLSL_KEYWORDS = new Set([
@@ -39,7 +42,7 @@ const TYPE_WORDS = new Set([
 const NUMBER_RE = /^(?:0[xX][0-9a-fA-F]+|(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)/;
 const IDENT_RE = /^[A-Za-z_$][A-Za-z0-9_$]*/;
 
-function tokenize(source: string, language: 'javascript' | 'glsl'): Token[] {
+function tokenize(source: string, language: 'javascript' | 'typescript' | 'glsl'): Token[] {
   const out: Token[] = [];
   const glsl = language === 'glsl';
   const keywords = glsl ? GLSL_KEYWORDS : JS_KEYWORDS;
@@ -162,7 +165,7 @@ function tokenize(source: string, language: 'javascript' | 'glsl'): Token[] {
 export interface SourcePreviewProps {
   value: string;
   note: string;
-  language?: 'javascript' | 'glsl';
+  language?: 'javascript' | 'typescript' | 'glsl';
   busy?: boolean;
   readOnly?: boolean;
   onChange?: (value: string) => void;
@@ -184,14 +187,9 @@ function SourcePreviewImpl({
   onActivate,
 }: SourcePreviewProps) {
   const preRef = useRef<HTMLPreElement | null>(null);
-  // the textarea is the real input: keep typing native and let the syntax
-  // colours catch up a frame later instead of tokenising on every keystroke
-  const [highlighted, setHighlighted] = useState(value);
-  useEffect(() => {
-    const id = window.setTimeout(() => setHighlighted(value), 110);
-    return () => window.clearTimeout(id);
-  }, [value]);
-  const tokens = useMemo(() => tokenize(highlighted, language), [highlighted, language]);
+  // Keep the highlighted layer in lockstep with the transparent textarea:
+  // deferring it makes the caret lead the visible text while typing.
+  const tokens = useMemo(() => tokenize(value, language), [value, language]);
 
   return (
     <div className={`source-preview ${readOnly ? 'is-readonly' : ''}`}>
@@ -200,7 +198,7 @@ function SourcePreviewImpl({
         <span>{note}</span>
         {onActivate && (
           <button className="ghostbtn source-preview-edit" onClick={onActivate}>
-            full editor
+            typed editor
           </button>
         )}
       </div>

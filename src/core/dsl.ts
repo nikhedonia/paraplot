@@ -185,6 +185,24 @@ export function scale(s: Vec3 | number, ...children: unknown[]): Node {
 }
 
 /* ------------------------------------------------------------------ */
+/* typed scenes                                                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Runtime identity helper for TypeScript scenes. The first argument is the
+ * exported params schema; the build function receives its resolved values.
+ *
+ *   export const params = { size: num(1, { min: 0.2, max: 2 }) };
+ *   export default defineScene(params, (k) => box({ s: k.size }));
+ */
+export function defineScene<P extends object>(
+  _params: P,
+  build: (values: P, time: number) => Node,
+): (values: P, time: number) => Node {
+  return build;
+}
+
+/* ------------------------------------------------------------------ */
 /* set operations                                                      */
 /* ------------------------------------------------------------------ */
 

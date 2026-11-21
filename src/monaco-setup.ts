@@ -20,6 +20,7 @@ interface TsDefaults {
 
 interface TsApi {
   javascriptDefaults: TsDefaults;
+  typescriptDefaults: TsDefaults;
   ScriptTarget: { ES2020: number };
   ModuleKind: { ESNext: number };
   ModuleResolutionKind: { NodeJs: number };
@@ -47,23 +48,29 @@ export function setupMonaco(): typeof monaco {
   // monaco 0.55 types the namespace as deprecated but ships it at runtime
   const ts = tsContribution as unknown as TsApi;
   const js = ts.javascriptDefaults;
-  js.setCompilerOptions({
+  const tsd = ts.typescriptDefaults;
+  const compilerOptions = {
     target: ts.ScriptTarget.ES2020,
     module: ts.ModuleKind.ESNext,
     moduleResolution: ts.ModuleResolutionKind.NodeJs,
     allowJs: true,
-    checkJs: true,
+    checkJs: false,
     noImplicitAny: false,
     strict: false,
     noUnusedLocals: false,
     allowNonTsExtensions: true,
-  });
-  js.setDiagnosticsOptions({
+  };
+  const diagnostics = {
     noSemanticValidation: false,
     noSyntaxValidation: false,
     diagnosticCodesToIgnore: [6133, 6196, 80001, 80006],
-  });
+  };
+  js.setCompilerOptions({ ...compilerOptions, checkJs: true });
+  js.setDiagnosticsOptions(diagnostics);
   js.addExtraLib(DSL_TYPES, 'ts:paraplot/dsl.d.ts');
+  tsd.setCompilerOptions(compilerOptions);
+  tsd.setDiagnosticsOptions(diagnostics);
+  tsd.addExtraLib(DSL_TYPES, 'ts:paraplot/dsl.d.ts');
 
   monaco.editor.defineTheme('paraplot', {
     base: 'vs-dark',

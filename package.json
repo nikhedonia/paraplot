@@ -13,7 +13,8 @@
   "dependencies": {
     "monaco-editor": "^0.55.0",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "react-dom": "^19.2.0",
+    "sucrase": "^3.35.1"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",

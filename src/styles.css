@@ -348,6 +348,10 @@ body.resizing {
   background: var(--accent);
 }
 
+.filedot.ts {
+  background: #6f9fd8;
+}
+
 .filedot.glsl {
   background: var(--teal);
 }

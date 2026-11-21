@@ -3,13 +3,14 @@
  */
 export const DSL_TYPES = String.raw`
 /* ------------------------------------------------------------------
- * paraplot DSL
+ * paraplot DSL — TypeScript scene
  *
- *   export const params = { ... };
- *   export default function build(k, t) { ... }
+ *   export const params = { size: num(1) };
+ *   export default defineScene(params, (k, t) => { ... });
  *
- * k holds the parameter values, t is the scene clock in seconds.
- * Declare the second argument to animate the scene graph.
+ * k holds the resolved parameter values, t is the scene clock in seconds.
+ * Declare t to animate the scene graph. Plain export default function
+ * build(k) scenes still work; defineScene gives k its full inferred type.
  * ------------------------------------------------------------------ */
 
 type Vec2 = [number, number];
@@ -34,6 +35,27 @@ interface SplineSolid extends Solid {
   /** Point at t in [0,1]. The spline must have a name. */
   at(t: number): SplinePoint;
 }
+
+/**
+ * Type a scene build function and infer its parameter values from params.
+ *
+ *   export const params = {
+ *     size: num(1, { min: 0.2, max: 2 }),
+ *     tint: color('#c9d2da'),
+ *   };
+ *
+ *   export default defineScene(params, (k, t) => {
+ *     // k.size: number, k.tint: string, t: number
+ *     return paint(box({ s: k.size }), k.tint);
+ *   });
+ *
+ * Omit t to build a static scene. The params argument is only used for type
+ * inference; the runtime passes the resolved values to build.
+ */
+declare function defineScene<P extends object>(
+  params: P,
+  build: (k: P, t: number) => Solid,
+): (k: P, t: number) => Solid;
 
 type Point3 = Vec3 | SplinePoint;
 type SolidInput = Solid | Solid[] | null | undefined | false;
@@ -267,6 +289,7 @@ declare function v3(x: number, y: number, z: number): Vec3;
 
 export const API_REFERENCE: Array<{ name: string; signature: string; note: string }> = [
   { name: 'params', signature: 'export const params = { … }', note: 'Constants + controls' },
+  { name: 'defineScene', signature: 'export default defineScene(params, (k, t) => …)', note: 'Typed scene · k inferred' },
   { name: 'build', signature: 'export default (k, t) => Solid', note: 'Pure scene function · t in seconds' },
   { name: 'group', signature: 'group({ t, r, s, op, k }, ...kids)', note: 'Local coordinates' },
   { name: 'union', signature: 'union(...kids)', note: 'min' },

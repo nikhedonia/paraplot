@@ -17,7 +17,7 @@ export interface ProjectRecord {
 }
 
 export const STARTER_SOURCE = String.raw`// A fresh paraplot project.
-// Change the parameters below, or rewrite everything.
+// TypeScript scene: k is inferred from params, so completions and docs work.
 
 export const params = {
   size:  num(0.7,  { min: 0.3, max: 1.4, step: 0.01 }),
@@ -25,7 +25,7 @@ export const params = {
   tint:  color('#c9d2da'),
 };
 
-export default function build(k) {
+export default defineScene(params, (k) => {
   const shell = group({ name: 'shell' },
     paint(box({ s: [k.size, k.size, k.size], round: k.round }), k.tint));
 
@@ -33,7 +33,7 @@ export default function build(k) {
     sphere({ r: k.size * 0.66 }));
 
   return subtract(shell, cavity);
-}
+});
 `;
 
 const newId = (): string => {

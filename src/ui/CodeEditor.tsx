@@ -15,7 +15,7 @@ function CodeEditorImpl({
   readOnly = false,
   language = 'javascript',
   active = true,
-  path = 'scene.js',
+  path = 'scene.ts',
 }: CodeEditorProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const editorRef = useRef<any>(null);
@@ -55,7 +55,8 @@ function CodeEditorImpl({
         scrollBeyondLastLine: false,
         smoothScrolling: true,
         cursorBlinking: 'smooth',
-        cursorSmoothCaretAnimation: 'on',
+        // smooth caret motion visibly trails the text while typing fast
+        cursorSmoothCaretAnimation: 'off',
         renderLineHighlight: 'line',
         renderLineHighlightOnlyWhenFocus: true,
         padding: { top: 12, bottom: 24 },

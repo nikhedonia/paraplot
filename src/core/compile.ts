@@ -1,3 +1,4 @@
+import { transform } from 'sucrase';
 import * as DSL from './dsl';
 import type { Node } from './types';
 import type { ParamSchema, ParamValues } from './controls';
@@ -37,10 +38,19 @@ interface UserModule {
 const DSL_NAMES = Object.keys(DSL).filter((k) => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(k));
 
 /**
- * The user file is plain javascript with `params` and a default export.
- * We rewrite the module statements into function-body statements. No
- * transpiler: the DSL is injected as ordinary bindings.
+ * Scenes are TypeScript (plain JavaScript is a subset). Sucrase strips the
+ * types synchronously in the compile worker; the DSL itself is injected as
+ * ordinary bindings, so there is no module loader or bundler at runtime.
  */
+function transpile(source: string): string {
+  try {
+    return transform(source, { transforms: ['typescript'], disableESTransforms: true }).code;
+  } catch (err) {
+    throw new Error(`syntax error in the scene: ${(err as Error).message ?? String(err)}`);
+  }
+}
+
+/** Rewrite module statements into function-body statements. */
 function rewrite(source: string): string {
   let out = source.replace(/^\s*import\s+(?:[^;]*?from\s+)?['"][^'"]*['"];?\s*$/gm, '');
   out = out.replace(/^\s*export\s+default\s+/gm, 'const __default = ');
@@ -58,7 +68,7 @@ function evalModule(source: string): UserModule {
   const body = `
 "use strict";
 const { ${DSL_NAMES.join(', ')} } = __dsl;
-${rewrite(source)}
+${rewrite(transpile(source))}
 ;
 return {
   params: typeof params !== 'undefined' ? params : undefined,
