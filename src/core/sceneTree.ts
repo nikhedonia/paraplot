@@ -90,6 +90,13 @@ export function describeNode(node: Node): { label: string; detail?: string } {
       return { label, detail: node.name ? `lathe · ${bits.join(' · ')}` : bits.join(' · ') };
     }
 
+    case 'repeat': {
+      return {
+        label: node.name ?? 'repeat',
+        detail: `×${node.count} · polar array${node.offset ? ` · ${num(node.offset)}°` : ''}`,
+      };
+    }
+
     case 'surface': {
       return {
         label: 'surface',
@@ -135,6 +142,7 @@ export function childEntries(node: Node): Array<{ node: Node; index: number }> {
   if (node.kind === 'op' || node.kind === 'group') {
     return node.children.map((child, index) => ({ node: child, index }));
   }
+  if (node.kind === 'repeat') return [{ node: node.child, index: 0 }];
   if (node.kind === 'paint' || node.kind === 'offset' || node.kind === 'shell') {
     return [{ node: node.child, index: 0 }];
   }
@@ -218,6 +226,11 @@ export function pruneHidden(root: Node, hidden: ReadonlySet<string>): Node | nul
         return children.length ? { ...node, children } : null;
       }
 
+      case 'repeat': {
+        const child = walk(node.child, childId(id, node.child, 0));
+        return child ? { ...node, child } : null;
+      }
+
       case 'paint':
       case 'offset':
       case 'shell': {
@@ -261,6 +274,11 @@ export function isolateNode(root: Node, id: string): Node | null {
           if (found) return found;
         }
         return null;
+      }
+
+      case 'repeat': {
+        const found = walk(node.child, childId(currentId, node.child, 0));
+        return found ? { ...node, child: found } : null;
       }
 
       case 'paint':

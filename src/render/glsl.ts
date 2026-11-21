@@ -38,8 +38,8 @@ uniform vec3  u_boxMin;
 uniform vec3  u_boxMax;
 uniform float u_shadows;
 uniform float u_ao;
+uniform int   u_shadowSteps;
 uniform float u_grid;
-uniform int   u_view;
 uniform float u_curvEps;
 uniform float u_curvScale;
 uniform float u_floorY;
@@ -48,10 +48,16 @@ uniform vec3  u_bgB;
 uniform float u_values[${values}];
 uniform vec3  u_matColor[${mats}];
 uniform float u_matRough[${mats}];
+// polygon/path point pools live in a data texture: dynamic indexing into a
+// large uniform array makes ANGLE/GL compile the shader for many seconds
+uniform sampler2D u_points;
 
 /* ------------- value pool accessors ------------- */
 vec2 v2(int i) { return vec2(u_values[i], u_values[i + 1]); }
 vec3 v3(int i) { return vec3(u_values[i], u_values[i + 1], u_values[i + 2]); }
+float pointAt(int i) { return texelFetch(u_points, ivec2(i, 0), 0).r; }
+vec2 point2(int i) { return vec2(pointAt(i), pointAt(i + 1)); }
+vec3 point3(int i) { return vec3(pointAt(i), pointAt(i + 1), pointAt(i + 2)); }
 
 /* ------------- signed distance primitives ------------- */
 float sdSphere(vec3 p, float r) { return length(p) - r; }
@@ -103,27 +109,31 @@ float sdCapsule(vec3 p, vec3 a, vec3 b, float r) { return sdSegment(p, a, b) - r
 
 /* signed distance to a closed polygon, points live in the value pool */
 float sdPoly(vec2 p, int off, int n) {
-  vec2 v0 = v2(off);
-  float d = dot(p - v0, p - v0);
+  // one texture fetch per edge: keep the previous vertex in a register
+  vec2 vj = point2(off + 2 * (n - 1));
+  float d = dot(p - vj, p - vj);
   float s = 1.0;
   for (int i = 0; i < n; i++) {
-    int j = (i == 0) ? n - 1 : i - 1;
-    vec2 vi = v2(off + 2 * i);
-    vec2 vj = v2(off + 2 * j);
+    vec2 vi = point2(off + 2 * i);
     vec2 e = vj - vi;
     vec2 w = p - vi;
     vec2 b = w - e * clamp(dot(w, e) / max(dot(e, e), 1e-8), 0.0, 1.0);
     d = min(d, dot(b, b));
     bvec3 c = bvec3(p.y >= vi.y, p.y < vj.y, e.x * w.y > e.y * w.x);
     if (all(c) || all(not(c))) s = -s;
+    vj = vi;
   }
   return s * sqrt(d);
 }
 
 float sdPath(vec3 p, int off, int n, float r) {
   float d = 1e12;
-  for (int i = 0; i < n - 1; i++) {
-    d = min(d, sdCapsule(p, v3(off + 3 * i), v3(off + 3 * (i + 1)), r));
+  // same trick: each capsule endpoint is fetched once
+  vec3 a = point3(off);
+  for (int i = 1; i < n; i++) {
+    vec3 b = point3(off + 3 * i);
+    d = min(d, sdCapsule(p, a, b, r));
+    a = b;
   }
   return d;
 }
@@ -180,34 +190,37 @@ bool boxHit(vec3 ro, vec3 rd, out float t0, out float t1) {
   return t1 > t0;
 }
 
-float march(vec3 ro, vec3 rd, float tmin, float tmax) {
+vec2 march(vec3 ro, vec3 rd, float tmin, float tmax) {
   float t = tmin;
   for (int i = 0; i < 512; i++) {
     if (i >= u_maxSteps) break;
-    float d = map(ro + rd * t).x;
+    vec2 m = map(ro + rd * t);
+    float d = m.x;
     if (isnan(d)) break;
     float eps = u_eps * max(1.0, t);
-    if (d < eps) return t;
+    if (d < eps) return vec2(t, m.y);
     t += max(d * 0.85, eps * 0.5);
     if (t > tmax) break;
   }
-  return -1.0;
+  return vec2(-1.0, 0.0);
 }
 
-vec3 calcNormal(vec3 p) {
-  const vec2 e = vec2(1.0, -1.0) * 0.0012;
-  return normalize(
-    e.xyy * map(p + e.xyy).x +
-    e.yyx * map(p + e.yyx).x +
-    e.yxy * map(p + e.yxy).x +
-    e.xxx * map(p + e.xxx).x
-  );
+const float GRAD_EPS = 0.0012;
+
+/** unnormalised tetrahedral gradient: normal = normalize(g), |grad d| = |g| / (4 e e) */
+vec3 surfGrad(vec3 p) {
+  const vec2 e = vec2(1.0, -1.0) * GRAD_EPS;
+  return e.xyy * map(p + e.xyy).x +
+         e.yyx * map(p + e.yyx).x +
+         e.yxy * map(p + e.yxy).x +
+         e.xxx * map(p + e.xxx).x;
 }
 
 float softShadow(vec3 ro, vec3 rd, float k) {
   float res = 1.0;
   float t = 0.02;
   for (int i = 0; i < 30; i++) {
+    if (i >= u_shadowSteps) break;
     float h = map(ro + rd * t).x;
     res = min(res, k * h / t);
     if (res < 0.005) break;
@@ -256,7 +269,24 @@ vec3 shade(vec3 p, vec3 n, vec3 rd, int mat, float t) {
   return col;
 }
 
-/* ------------- smoothness analysis ------------- */
+/* ------------- analysis views compile only what they use ------------- */
+#if PARAPLOT_VIEW != 0
+vec3 toLinear(vec3 c) { return pow(max(c, 0.0), vec3(2.2)); }
+#endif
+
+#if PARAPLOT_VIEW == 2 || PARAPLOT_VIEW == 4
+vec3 analysisRamp(float t) {
+  vec3 mid = vec3(0.33, 0.35, 0.37);
+  vec3 cold = vec3(0.20, 0.45, 0.85);
+  vec3 warm = vec3(0.95, 0.55, 0.26);
+  vec3 c = t < 0.0
+    ? mix(mid, cold, clamp(-t, 0.0, 1.0))
+    : mix(mid, warm, clamp(t, 0.0, 1.0));
+  return toLinear(c);
+}
+#endif
+
+#if PARAPLOT_VIEW == 2
 float meanCurvatureAt(vec3 p) {
   float e = u_curvEps;
   float d0 = map(p).x;
@@ -269,36 +299,16 @@ float meanCurvatureAt(vec3 p) {
   float h = 0.5 * lap;
   return (isnan(h) || isinf(h)) ? 0.0 : h;
 }
+#endif
 
-float gradientLengthAt(vec3 p) {
-  float e = u_curvEps;
-  vec3 g = vec3(
-    map(p + vec3(e, 0.0, 0.0)).x - map(p - vec3(e, 0.0, 0.0)).x,
-    map(p + vec3(0.0, e, 0.0)).x - map(p - vec3(0.0, e, 0.0)).x,
-    map(p + vec3(0.0, 0.0, e)).x - map(p - vec3(0.0, 0.0, e)).x
-  );
-  float len = length(g) / (2.0 * e);
-  return (isnan(len) || isinf(len)) ? 1.0 : len;
-}
-
-vec3 toLinear(vec3 c) { return pow(max(c, 0.0), vec3(2.2)); }
-
-vec3 analysisRamp(float t) {
-  vec3 mid = vec3(0.33, 0.35, 0.37);
-  vec3 cold = vec3(0.20, 0.45, 0.85);
-  vec3 warm = vec3(0.95, 0.55, 0.26);
-  vec3 c = t < 0.0
-    ? mix(mid, cold, clamp(-t, 0.0, 1.0))
-    : mix(mid, warm, clamp(t, 0.0, 1.0));
-  return toLinear(c);
-}
-
+#if PARAPLOT_VIEW == 3
 vec3 zebraColor(vec3 n, vec3 rd) {
   vec3 r = reflect(rd, n);
   float lat = atan(r.y, length(r.xz));
   float stripe = smoothstep(-0.08, 0.08, sin(lat * 20.0));
   return toLinear(mix(vec3(0.07, 0.08, 0.10), vec3(0.92, 0.93, 0.90), stripe));
 }
+#endif
 
 float gridLines(vec2 p, float spacing) {
   vec2 q = p / spacing;
@@ -324,35 +334,44 @@ void main() {
   bg += vec3(0.015, 0.022, 0.030) * exp(-2.6 * dot(uv, uv));
 
   float t0, t1;
-  float th = -1.0;
+  vec2 hit = vec2(-1.0, 0.0);
   if (boxHit(ro, rd, t0, t1)) {
-    th = march(ro, rd, t0, t1);
+    hit = march(ro, rd, t0, t1);
   }
+  float th = hit.x;
 
   vec3 col = bg;
   if (th > 0.0) {
     vec3 p = ro + rd * th;
-    vec3 n = calcNormal(p);
-    int mat = int(round(map(p).y));
+#if PARAPLOT_VIEW != 2
+    vec3 grad = surfGrad(p);
+#endif
+#if PARAPLOT_VIEW == 0 || PARAPLOT_VIEW == 1 || PARAPLOT_VIEW == 3
+    vec3 n = normalize(grad);
+#endif
+    // march already evaluated map() at the hit point: reuse its material
+    int mat = int(round(hit.y));
 
-    if (u_view == 1) {
-      col = toLinear(n * 0.5 + 0.5);
-    } else if (u_view == 2) {
-      float h = meanCurvatureAt(p);
-      float t = clamp(h / max(u_curvScale, 0.001), -1.0, 1.0);
-      col = analysisRamp(t);
-    } else if (u_view == 3) {
-      col = zebraColor(n, rd);
-    } else if (u_view == 4) {
-      float g = gradientLengthAt(p);
-      float t = clamp((g - 1.0) * 2.0, -1.0, 1.0);
-      col = analysisRamp(t);
-    } else {
-      col = shade(p, n, rd, mat, th);
-    }
+#if PARAPLOT_VIEW == 1
+    col = toLinear(n * 0.5 + 0.5);
+#elif PARAPLOT_VIEW == 2
+    float h = meanCurvatureAt(p);
+    float t = clamp(h / max(u_curvScale, 0.001), -1.0, 1.0);
+    col = analysisRamp(t);
+#elif PARAPLOT_VIEW == 3
+    col = zebraColor(n, rd);
+#elif PARAPLOT_VIEW == 4
+    // reuse the four normal taps instead of six extra map() calls
+    float g = length(grad) / (4.0 * GRAD_EPS * GRAD_EPS);
+    float t = clamp((g - 1.0) * 2.0, -1.0, 1.0);
+    col = analysisRamp(t);
+#else
+    col = shade(p, n, rd, mat, th);
+#endif
   }
 
-  if (u_view == 0 && u_grid > 0.5 && abs(rd.y) > 1e-5) {
+#if PARAPLOT_VIEW == 0
+  if (u_grid > 0.5 && abs(rd.y) > 1e-5) {
     float tp = (u_floorY - ro.y) / rd.y;
     if (tp > 0.0 && (th < 0.0 || tp < th)) {
       vec3 gp = ro + rd * tp;
@@ -362,11 +381,10 @@ void main() {
     }
   }
 
-  if (u_view == 0) {
-    // filmic curve only for the shaded view; analysis colours are exact
-    col *= 1.0 - 0.28 * dot(uv * 0.95, uv * 0.95);
-    col = col / (col + vec3(1.0));
-  }
+  // filmic curve only for the shaded view; analysis colours are exact
+  col *= 1.0 - 0.28 * dot(uv * 0.95, uv * 0.95);
+  col = col / (col + vec3(1.0));
+#endif
   col = pow(max(col, 0.0), vec3(1.0 / 2.2));
   col += (hash12(gl_FragCoord.xy) - 0.5) / 255.0;
 

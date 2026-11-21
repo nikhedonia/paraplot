@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { memo, useEffect, useState } from 'react';
 import type { Control, ParamSchema, ParamValue, ParamValues } from '../core/controls';
 import { isControl } from '../core/controls';
 import { normalizeHexColor } from '../core/math';
@@ -65,9 +65,22 @@ function NumField({
   );
 }
 
-export function ParamPanel({ schema, values, onChange, onReset }: ParamPanelProps) {
+function ParamPanelImpl({ schema, values, onChange, onReset }: ParamPanelProps) {
   const entries = Object.keys(schema).filter((k) => isControl(schema[k]));
-  const set = (key: string, v: ParamValue) => onChange({ ...values, [key]: v });
+  const set = (key: string, v: ParamValue) => {
+    // the panel now owns the immediate values (the compiled values lag by the
+    // compile throttle), so clamp numeric controls here
+    const c = schema[key];
+    let next = v;
+    if (isControl(c)) {
+      if ((c.__ctl === 'number' || c.__ctl === 'int') && typeof v === 'number') {
+        next = Math.min(c.max, Math.max(c.min, c.__ctl === 'int' ? Math.round(v) : v));
+      } else if (c.__ctl === 'vec3' && Array.isArray(v)) {
+        next = v.map((x) => Math.min(c.max, Math.max(c.min, x))) as ParamValue;
+      }
+    }
+    onChange({ ...values, [key]: next });
+  };
 
   return (
     <section className="dock-panel params">
@@ -228,3 +241,5 @@ export function ParamPanel({ schema, values, onChange, onReset }: ParamPanelProp
     </section>
   );
 }
+
+export const ParamPanel = memo(ParamPanelImpl);

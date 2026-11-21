@@ -64,6 +64,7 @@ class MainBackend implements RenderBackend {
       width: this.renderer.canvas.width,
       height: this.renderer.canvas.height,
       renderMs: performance.now() - t0,
+      compiled: this.renderer.takeCompiled(),
     });
   }
 
@@ -120,12 +121,16 @@ class WorkerBackend implements RenderBackend {
       case 'program-ok':
         this.hooks.onError(null);
         break;
+      case 'view-ready':
+        this.hooks.onProgramReady?.();
+        break;
       case 'rendered':
         this.busy = false;
         this.hooks.onFrame({
           width: msg.width,
           height: msg.height,
           renderMs: typeof msg.renderMs === 'number' ? msg.renderMs : undefined,
+          compiled: msg.compiled === true,
         });
         break;
       case 'snapshot': {

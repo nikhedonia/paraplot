@@ -4,14 +4,16 @@
  */
 import { compileScene } from './compile';
 import { generate } from './codegen';
-import { buildSceneTree, isolateNode, pruneHidden } from './sceneTree';
-import type { Node } from './types';
+import { buildSceneTree, isolateNode, pruneHidden, type TreeNode } from './sceneTree';
+import type { Node, SplineInfo } from './types';
+import type { ParamSchema } from './controls';
 import type {
   CompileFilters,
   CompileRequest,
   CompileWorkerRequest,
   CompileWorkerMessage,
   ProgramView,
+  ProgramWire,
 } from './compileProtocol';
 import type { CompiledProgram } from './codegen';
 
@@ -21,6 +23,20 @@ const scope = self as unknown as {
 };
 
 let last: (CompileRequest & { time: number }) | null = null;
+
+/** editor-only payloads are rebuilt every compile, so remember what was sent */
+interface StructuralCache {
+  source: string;
+  treeKey: string;
+  tree: TreeNode;
+  splinesKey: string;
+  splines: SplineInfo[];
+  baseKey: string;
+  baseSplines: SplineInfo[];
+  schema: ParamSchema;
+}
+let lastStruct: StructuralCache | null = null;
+let lastGlsl = '';
 
 const post = (message: CompileWorkerMessage, transfer: Transferable[] = []) =>
   scope.postMessage(message, transfer);
@@ -64,18 +80,48 @@ function compile(req: CompileRequest, id: number, time: number): void {
   const full = res.program;
   const filtered = filterRoot(full.scene, req.filters);
   const displayed = filtered === null ? null : filtered === full.scene ? full : generate(filtered);
-  const payload = displayed ? view(displayed) : null;
-  const transfer = payload ? [payload.values.buffer] : [];
+
+  // the editor payload (tree, splines, schema) only changes when the scene
+  // graph changes; a parameter drag must not clone hundreds of nodes
+  const tree = buildSceneTree(full.scene);
+  const treeKey = JSON.stringify(tree);
+  const splinesKey = JSON.stringify(full.splines);
+  const baseKey = JSON.stringify(res.baseSplines);
+  const cache = lastStruct;
+  const treeOut = cache?.treeKey === treeKey ? null : tree;
+  const splinesOut = cache?.splinesKey === splinesKey ? null : full.splines;
+  const baseOut = cache?.baseKey === baseKey ? null : res.baseSplines;
+  const schemaOut = cache?.source === req.source ? null : res.schema;
+  lastStruct = {
+    source: req.source,
+    treeKey,
+    tree,
+    splinesKey,
+    splines: full.splines,
+    baseKey,
+    baseSplines: res.baseSplines,
+    schema: res.schema,
+  };
+
+  // numeric parameters live in the uniform pool: the shader text is stable
+  // across slider drags, so only send it when it really changed
+  const program = displayed ? view(displayed) : null;
+  let wireProgram: ProgramWire | null = null;
+  if (program) {
+    wireProgram = program.glsl === lastGlsl ? { ...program, glsl: undefined } : program;
+    lastGlsl = program.glsl;
+  }
+  const transfer = wireProgram ? [wireProgram.values.buffer] : [];
   post(
     {
       type: 'compiled',
       id,
       ok: true,
-      program: payload,
-      splines: full.splines,
-      baseSplines: res.baseSplines,
-      tree: buildSceneTree(full.scene),
-      schema: res.schema,
+      program: wireProgram,
+      splines: splinesOut,
+      baseSplines: baseOut,
+      tree: treeOut,
+      schema: schemaOut,
       values: res.values,
       animated: res.animated,
       ms: res.ms,
@@ -102,13 +148,32 @@ function animate(id: number, time: number): void {
   }
   const displayed = filtered === full.scene ? full : generate(filtered);
   const payload = view(displayed);
-  post({ type: 'animated', id, ok: true, program: payload, ms: res.ms }, [payload.values.buffer]);
+  let glsl: string | undefined;
+  if (payload.glsl !== lastGlsl) {
+    glsl = payload.glsl;
+    lastGlsl = payload.glsl;
+  }
+  post(
+    {
+      type: 'animated',
+      id,
+      ok: true,
+      values: payload.values,
+      bounds: payload.bounds,
+      materials: payload.materials,
+      stats: payload.stats,
+      usesTime: payload.usesTime,
+      ...(glsl !== undefined ? { glsl } : {}),
+      ms: res.ms,
+    },
+    [payload.values.buffer],
+  );
 }
 
 scope.onmessage = (event: MessageEvent) => {
   const msg = event.data as CompileWorkerRequest;
   if (msg?.type === 'compile') {
-    compile(msg, msg.id, 0);
+    compile(msg, msg.id, msg.time ?? 0);
   } else if (msg?.type === 'animate') {
     animate(msg.id, msg.time);
   }

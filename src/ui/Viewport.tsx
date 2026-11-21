@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import type { MutableRefObject } from 'react';
 import type { ProgramView } from '../core/compileProtocol';
 import type { Aabb } from '../core/types';
@@ -58,8 +58,6 @@ interface Size {
 /** first frames run at the floor quality so a heavy scene can never wedge the GPU */
 const BOOT_QUALITY = 0.3;
 const PROBE_STEPS = 32;
-/** target milliseconds for one refined frame */
-const FRAME_BUDGET = 34;
 /** while dragging, render fewer pixels and skip shadows … */
 const DRAFT_MS = 140;
 const DRAFT_SCALE = 0.62;
@@ -67,9 +65,19 @@ const DRAFT_SCALE = 0.62;
 const IDLE_MS = 500;
 /** hard cap on the drawing buffer so 4k/retina screens don't melt */
 const PIXEL_BUDGET = 2_000_000;
+/** per-frame budgets (ms) used to pick a sustainable render scale */
+const IDLE_BUDGET = 90;
+/** the curvature view takes seven extra map() calls per hit pixel */
+const CURVATURE_MAX_SCALE = 0.55;
+const MAX_RAMP = 6;
 
-const qualitySteps = (scale: number): number =>
-  Math.max(24, Math.min(200, Math.round(40 + ((Math.min(1, Math.max(0.3, scale)) - 0.3) / 0.7) * 160)));
+/** match the original draft / standard / fine presets (72 / 128 / 200 steps) */
+const qualitySteps = (scale: number): number => {
+  const s = Math.min(1, Math.max(0.3, scale));
+  if (s <= 0.55) return Math.round(32 + ((s - 0.3) / 0.25) * 40);
+  if (s <= 0.8) return Math.round(72 + ((s - 0.55) / 0.25) * 56);
+  return Math.round(128 + ((s - 0.8) / 0.2) * 72);
+};
 
 interface QualityState {
   phase: 'probe1' | 'probe2' | 'ramp' | 'idle';
@@ -78,7 +86,7 @@ interface QualityState {
   rampCount: number;
 }
 
-export function Viewport({
+function ViewportImpl({
   program,
   settings,
   onSettings,
@@ -122,6 +130,12 @@ export function Viewport({
   onFirstFrameRef.current = onFirstFrame;
   const clockRef = useRef(0);
   const autoScaleRef = useRef(1);
+  const submittedRef = useRef<{
+    kind: 'probe' | 'draft' | 'live' | 'idle';
+    scale: number;
+    steps: number;
+  } | null>(null);
+  const glslSeenRef = useRef('');
   const dirtyRef = useRef(true);
   const interactingRef = useRef(false);
   const lastTapRef = useRef(0);
@@ -282,11 +296,20 @@ export function Viewport({
     setEffectiveQuality(BOOT_QUALITY);
     shownQualityRef.current = BOOT_QUALITY;
     autoScaleRef.current = 1;
+    submittedRef.current = null;
+    glslSeenRef.current = programRef.current?.glsl ?? '';
     animSeqRef.current++;
     animInFlightRef.current = false;
 
     const isLive = () =>
       playingRef.current && (animatedRef.current || !!programRef.current?.usesTime);
+
+    /** the slider target, capped for the (much heavier) analysis shader */
+    const viewTarget = () =>
+      Math.min(
+        settingsRef.current.scale,
+        settingsRef.current.view === 'curvature' ? CURVATURE_MAX_SCALE : 1,
+      );
 
     function ensure() {
       if (disposed || raf || document.hidden) return;
@@ -356,37 +379,67 @@ export function Viewport({
         }
       }
 
-      // measure the first frames and choose a sustainable quality; the probe
-      // is intentionally the lowest resolution and disables expensive effects
+      // The first two frames are a probe at the floor quality. The second one
+      // is timed (the first may include a lazy shader/driver compile) and
+      // picks a starting scale; a short ramp then fine-tunes it against the
+      // measured GPU time. Interactive and animated frames have their own
+      // feedback loops so a heavy scene stays responsive instead of locking
+      // the viewport at an unsustainable quality.
       const q = qualityRef.current;
-      if (q.phase !== 'idle') {
-        const ms = info.renderMs ?? performance.now() - renderStartRef.current;
-        if (q.phase === 'probe1') {
-          // first frame may include a lazy shader/driver compile: measure again
-          q.phase = 'probe2';
+      const sub = submittedRef.current;
+      const now = performance.now();
+      const measured =
+        typeof info.renderMs === 'number' && info.renderMs > 0
+          ? info.renderMs
+          : Math.max(1, now - renderStartRef.current);
+
+      const compiled = info.compiled === true;
+      if (!sub) {
+        // stale ack from a frame submitted before a view reset
+      } else if (q.phase === 'probe1') {
+        q.phase = 'probe2';
+        dirtyRef.current = true;
+      } else if (q.phase === 'probe2') {
+        if (compiled) {
+          // no clean timing yet (driver compile): probe once more
           dirtyRef.current = true;
-          ensure();
-        } else if (q.phase === 'probe2') {
+        } else {
+          const cap = viewTarget();
           q.scale = Math.max(
             BOOT_QUALITY,
-            Math.min(q.target, 0.85 * BOOT_QUALITY * Math.sqrt(FRAME_BUDGET / Math.max(ms, 1))),
+            Math.min(cap, 0.9 * BOOT_QUALITY * Math.sqrt(IDLE_BUDGET / measured)),
           );
           q.phase = 'ramp';
           q.rampCount = 0;
+          // animated scenes start from the same estimate, then tune the multiplier
+          autoScaleRef.current = Math.min(1, Math.max(0.4, q.scale / Math.max(cap, 0.01)));
           dirtyRef.current = true;
-          ensure();
-        } else {
-          q.rampCount++;
-          if (ms < FRAME_BUDGET * 0.7 && q.scale < q.target) {
-            q.scale = Math.min(q.target, q.scale * 1.18);
-          } else if (ms > FRAME_BUDGET * 1.35 && q.scale > BOOT_QUALITY) {
-            q.scale = Math.max(BOOT_QUALITY, q.scale * 0.85);
-          }
-          const settled = ms > FRAME_BUDGET * 0.55 && ms < FRAME_BUDGET * 1.25;
-          if (q.scale >= q.target - 0.01 || settled || q.rampCount >= 5) q.phase = 'idle';
-          dirtyRef.current = true;
-          ensure();
         }
+      } else if (!compiled && q.phase === 'ramp' && sub?.kind === 'idle') {
+        const cap = viewTarget();
+        q.rampCount++;
+        q.scale = Math.min(q.scale, cap);
+        if (measured > IDLE_BUDGET * 1.35 && q.scale > BOOT_QUALITY) {
+          q.scale = Math.max(BOOT_QUALITY, q.scale * 0.85);
+        } else if (measured < IDLE_BUDGET * 0.7 && q.scale < cap) {
+          q.scale = Math.min(cap, q.scale * 1.18);
+        }
+        const within = measured > IDLE_BUDGET * 0.5 && measured < IDLE_BUDGET * 1.2;
+        const atFloor = q.scale <= BOOT_QUALITY + 1e-6 && measured > IDLE_BUDGET * 1.35;
+        const atTarget = q.scale >= cap - 0.01;
+        if (
+          within ||
+          atFloor ||
+          (atTarget && measured <= IDLE_BUDGET * 1.35) ||
+          q.rampCount >= MAX_RAMP
+        ) {
+          q.phase = 'idle';
+        } else {
+          dirtyRef.current = true;
+        }
+      } else if (compiled) {
+        // shader link time is not a rendering measurement: take one more frame
+        dirtyRef.current = true;
       }
 
       const actualScale = submittedScaleRef.current;
@@ -395,25 +448,23 @@ export function Viewport({
         setEffectiveQuality(actualScale);
       }
 
-      const now = performance.now();
       if (now - fpsStart > 400) {
-        const fps = Math.round((frames * 1000) / (now - fpsStart));
+        const fps = Math.round((frames * 1000) / Math.max(1, now - fpsStart));
         if (isLive()) {
-          // dynamic resolution: keep each submitted frame inside the budget,
-          // so a slow GPU degrades pixels instead of responsiveness
+          // animated scenes can also be limited by the worker's scene rebuild,
+          // so use the observed frame rate rather than the draw time alone
           const a = autoScaleRef.current;
-          if (fps < 42 && a > 0.5) {
-            autoScaleRef.current = Math.max(0.5, Math.round((a - 0.1) * 100) / 100);
-          } else if (fps > 56 && a < 1) {
-            autoScaleRef.current = Math.min(1, Math.round((a + 0.05) * 100) / 100);
-          }
+          if (fps < 30 && a > 0.4) autoScaleRef.current = Math.max(0.4, a * 0.9);
+          else if (fps > 52 && a < 1) autoScaleRef.current = Math.min(1, a * 1.05);
         }
         setStats({
           fps,
           w: info.width,
           h: info.height,
           time: clockRef.current,
-          live: true,
+          // a late ack from a frame whose idle timer already fired must not
+          // leave the HUD stuck on "rendering" with no loop running
+          live: isLive() || !idle,
           renderer: backend?.offscreen ? 'worker' : 'main',
         });
         frames = 0;
@@ -430,6 +481,21 @@ export function Viewport({
           if (message && !hasFrameRef.current) setBootError(message);
         },
         onContextLost: () => onLostRef.current(),
+        onProgramReady: () => {
+          // the first curvature frame was measured while the variant was
+          // still linking (shaded fallback); probe again with the real program
+          if (settingsRef.current.view === 'curvature') {
+            const q = qualityRef.current;
+            q.phase = 'probe1';
+            q.scale = BOOT_QUALITY;
+            q.rampCount = 0;
+            submittedRef.current = null;
+            submittedScaleRef.current = BOOT_QUALITY;
+            shownQualityRef.current = BOOT_QUALITY;
+            setEffectiveQuality(BOOT_QUALITY);
+          }
+          wake();
+        },
       });
     } catch (err) {
       setWebglError((err as Error).message ?? String(err));
@@ -493,29 +559,41 @@ export function Viewport({
 
       const q = qualityRef.current;
       const probing = q.phase === 'probe1' || q.phase === 'probe2';
-      const baseScale = probing ? BOOT_QUALITY : q.scale;
-      let scale = baseScale * (drafting ? DRAFT_SCALE : 1);
-      if (live) scale *= autoScaleRef.current;
+      const target = viewTarget();
+      let kind: 'probe' | 'draft' | 'live' | 'idle';
+      let scale: number;
+      if (probing) {
+        kind = 'probe';
+        scale = BOOT_QUALITY;
+      } else if (drafting) {
+        kind = 'draft';
+        const base = live ? target * autoScaleRef.current : Math.min(q.scale, target);
+        scale = base * DRAFT_SCALE;
+      } else if (live) {
+        kind = 'live';
+        scale = target * autoScaleRef.current;
+      } else {
+        kind = 'idle';
+        scale = Math.min(q.scale, target);
+      }
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       const pixels = w * h * dpr * dpr * scale * scale;
       if (pixels > PIXEL_BUDGET) scale *= Math.sqrt(PIXEL_BUDGET / pixels);
       scale = Math.max(0.12, scale);
 
       const base = settingsRef.current;
-      const firstProbe = q.phase === 'probe1';
       const renderSettings: RenderSettings = {
         ...base,
-        maxSteps: firstProbe
-          ? PROBE_STEPS
-          : Math.min(qualitySteps(scale), drafting ? 88 : 200),
-        shadows: firstProbe || drafting ? false : base.shadows,
-        ao: firstProbe || drafting ? false : base.ao,
+        maxSteps: probing ? PROBE_STEPS : Math.min(qualitySteps(scale), drafting ? 88 : 200),
+        shadows: probing || drafting ? false : base.shadows,
+        ao: probing || drafting ? false : base.ao,
       };
 
       // the grid plane is a scene-level constant: use the static bounds
       // so it does not bob while an animated scene moves
       const b = programRef.current?.bounds;
       submittedScaleRef.current = scale;
+      submittedRef.current = { kind, scale, steps: renderSettings.maxSteps };
       renderStartRef.current = performance.now();
       try {
         backend.render({
@@ -527,7 +605,7 @@ export function Viewport({
           time: clockRef.current,
           floorY: b ? b.min[1] - 0.004 : 0,
           scale,
-          probe: q.phase !== 'idle',
+          probe: kind === 'probe' || (kind === 'idle' && q.phase === 'ramp'),
         });
       } catch (err) {
         onErrorRef.current((err as Error).message ?? String(err));
@@ -597,7 +675,31 @@ export function Viewport({
     // a new scene invalidates any animation sample that was in flight
     animSeqRef.current++;
     animInFlightRef.current = false;
+    // structural changes may have a different cost: let the ramp re-measure
+    if (program.glsl !== glslSeenRef.current) {
+      glslSeenRef.current = program.glsl;
+      const q = qualityRef.current;
+      if (q.phase !== 'probe1' && q.phase !== 'probe2') {
+        q.phase = 'ramp';
+        q.rampCount = 0;
+        // a structural edit can change cost by a lot: re-measure from a
+        // conservative scale instead of risking a multi-second frame
+        q.scale = Math.max(BOOT_QUALITY, Math.min(q.scale, 0.55));
+      }
+    }
     frameRef.current = program.bounds;
+    // While a scene is live, an input edit should not swap in the compile-time
+    // pose: the worker has already stored the new inputs, and the next
+    // animation sample will upload them at the current clock. This removes the
+    // one-frame step back/forward on every parameter change.
+    // Only graph-animated scenes get a follow-up animation sample. A scene
+    // that animates purely through the shader clock (implicit `time`) must
+    // upload the new program immediately, or filtered/cleared scenes never
+    // reach the viewport.
+    if (playingRef.current && animatedRef.current && hasFrameRef.current) {
+      wakeRef.current();
+      return;
+    }
     backendRef.current?.setScene(program);
     if (!framedRef.current) {
       framedRef.current = true;
@@ -618,6 +720,7 @@ export function Viewport({
   /* ---- any of these need a fresh frame ---- */
   const settingsSeen = useRef(false);
   const scaleSeen = useRef(settings.scale);
+  const fxSeen = useRef({ shadows: settings.shadows, ao: settings.ao, view: settings.view });
   useEffect(() => {
     if (!settingsSeen.current) {
       settingsSeen.current = true;
@@ -633,8 +736,43 @@ export function Viewport({
       q.target = settings.scale;
       q.rampCount = 0;
       autoScaleRef.current = 1;
+      submittedScaleRef.current = settings.scale;
       shownQualityRef.current = settings.scale;
       setEffectiveQuality(settings.scale);
+    }
+    const fx = fxSeen.current;
+    if (fx.view !== settings.view) {
+      const prevView = fx.view;
+      fx.view = settings.view;
+      fx.shadows = settings.shadows;
+      fx.ao = settings.ao;
+      const q = qualityRef.current;
+      if (settings.view === 'curvature') {
+        // the curvature pass takes seven extra map() calls per hit pixel:
+        // restart from the floor so the first analysis draw cannot stall the GPU
+        q.phase = 'probe1';
+        q.scale = BOOT_QUALITY;
+        q.rampCount = 0;
+      } else if (prevView === 'curvature' || q.phase === 'idle') {
+        // normals/gradient/zebra cost about the same as shaded: keep the
+        // current scale, just re-measure it for the new program
+        q.phase = 'ramp';
+        q.rampCount = 0;
+      }
+      // the in-flight frame belongs to the previous view; do not feed its
+      // timing into the new program's ramp
+      submittedRef.current = null;
+      submittedScaleRef.current = q.scale;
+      shownQualityRef.current = q.scale;
+      setEffectiveQuality(q.scale);
+    } else if (fx.shadows !== settings.shadows || fx.ao !== settings.ao) {
+      fx.shadows = settings.shadows;
+      fx.ao = settings.ao;
+      const q = qualityRef.current;
+      if (q.phase === 'idle') {
+        q.phase = 'ramp';
+        q.rampCount = 0;
+      }
     }
     wakeRef.current();
   }, [settings, playing, animated]);
@@ -774,9 +912,10 @@ export function Viewport({
         </div>
         <div
           className="chip dim qualitychip"
-          title="current render scale — the slider below is the target"
+          title="current render scale — the slider below is the target; the viewport auto-caps it to keep frames responsive"
         >
           q {Math.round(effectiveQuality * 100)}%
+          {Math.abs(effectiveQuality - settings.scale) > 0.01 ? ' auto' : ''}
         </div>
         {(animated || program?.usesTime) && (
           <div className={`chip time ${playing ? 'live' : ''}`} title="scene clock">
@@ -843,7 +982,7 @@ export function Viewport({
         >
           <Icon name="ao" />
         </button>
-        <label className="hud-quality" title="Render quality target — starts low and ramps up as frames are measured">
+        <label className="hud-quality" title="Render quality target — the actual scale is auto-capped when frames would exceed the time budget">
           <span>quality</span>
           <input
             type="range"
@@ -988,3 +1127,6 @@ export function Viewport({
     </div>
   );
 }
+
+/** the parent re-renders on every keystroke/slider tick; the HUD does not need to */
+export const Viewport = memo(ViewportImpl);

@@ -13,6 +13,7 @@ const hasRefs = (root: Node): boolean => {
     return root.children.some(hasRefs);
   }
   if (root.kind === 'op') return root.children.some(hasRefs);
+  if (root.kind === 'repeat') return hasRefs(root.child);
   if (root.kind === 'paint' || root.kind === 'offset' || root.kind === 'shell') {
     return hasRefs(root.child);
   }
@@ -54,6 +55,8 @@ function collectNamedSplines(
     }
     if (node.kind === 'group' || node.kind === 'op') {
       node.children.forEach(walk);
+    } else if (node.kind === 'repeat') {
+      walk(node.child);
     } else if (node.kind === 'paint' || node.kind === 'offset' || node.kind === 'shell') {
       walk(node.child);
     }
@@ -142,6 +145,10 @@ export function resolveSplinePointRefs(root: Node): Node {
           return next;
         });
         return changed ? { ...node, children } : node;
+      }
+      case 'repeat': {
+        const child = walk(node.child);
+        return child === node.child ? node : { ...node, child };
       }
       case 'paint':
       case 'offset':

@@ -103,6 +103,24 @@ declare function rotate(r: Vec3 | number, ...children: SolidInput[]): Solid;
 declare function scale(s: Vec3 | number, ...children: SolidInput[]): Solid;
 declare const transform: typeof group;
 
+interface PolarRepeatOpts {
+  /** number of identical copies around the Y axis */
+  count: number;
+  /** angular offset of the first copy, degrees */
+  offset?: number;
+  /** angular width of the child behind the copy angle, degrees */
+  spread?: number;
+  /** label shown in the component tree */
+  name?: string;
+}
+
+/**
+ * Polar array of one shape around the Y axis. The shader folds the query
+ * point into the nearest sector and evaluates the child once, so the cost is
+ * independent of the copy count; changing count only updates a uniform.
+ */
+declare function polarRepeat(o: PolarRepeatOpts, child: SolidInput): Solid;
+
 /* ---- set operations ---- */
 
 /** Boolean union (min). Accepts arrays and falsy values so you can map(). */
@@ -263,4 +281,5 @@ export const API_REFERENCE: Array<{ name: string; signature: string; note: strin
   { name: 'extrude', signature: 'extrude({ points, h })', note: 'Profile → solid' },
   { name: 'lathe', signature: 'lathe({ points })', note: 'Revolve profile' },
   { name: 'surface', signature: 'surface({ a, b, thickness })', note: 'Ruled surface · GPU connect' },
+  { name: 'polarRepeat', signature: 'polarRepeat({ count }, shape)', note: 'Polar array · one GPU fold' },
 ];

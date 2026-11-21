@@ -22,6 +22,26 @@ let bounds: Aabb = { min: [-1, -1, -1], max: [1, 1, 1] };
 const post = (message: unknown) => scope.postMessage(message);
 const scene = () => ({ glsl, values, materials, bounds });
 
+let polling = false;
+/** poll an asynchronous analysis-program link without blocking frame messages */
+function schedulePoll(): void {
+  if (polling || !renderer) return;
+  polling = true;
+  setTimeout(() => {
+    polling = false;
+    if (!renderer) return;
+    const state = renderer.pollViewProgram();
+    if (state === 'pending') schedulePoll();
+    else if (state === 'ready') post({ type: 'view-ready' });
+    else if (state === 'error') {
+      post({
+        type: 'error',
+        message: renderer.takePendingViewError() ?? 'analysis shader failed to compile',
+      });
+    }
+  }, 25);
+}
+
 scope.onmessage = async (event: MessageEvent) => {
   const msg = event.data;
   switch (msg?.type) {
@@ -77,13 +97,21 @@ scope.onmessage = async (event: MessageEvent) => {
           args.floorY,
           args.scale,
         );
-        if (args.probe) renderer.gl.finish();
+        // Only probe/ramp frames pay for a GPU sync: syncing every frame
+        // would stall the shared GPU process and make the whole UI hang.
+        let renderMs: number | undefined;
+        if (args.probe) {
+          renderer.syncFrame();
+          renderMs = performance.now() - t0;
+        }
         post({
           type: 'rendered',
           width: renderer.canvas.width,
           height: renderer.canvas.height,
-          renderMs: performance.now() - t0,
+          renderMs,
+          compiled: renderer.takeCompiled(),
         });
+        if (renderer.hasPendingView()) schedulePoll();
       } catch (err) {
         post({ type: 'error', message: (err as Error).message ?? String(err) });
       }
@@ -109,6 +137,8 @@ scope.onmessage = async (event: MessageEvent) => {
             args.floorY,
             args.scale,
           );
+          // make sure the offscreen canvas is complete before copying it
+          renderer.syncFrame();
           // copy synchronously, then encode off-thread
           dataUrl = await captureOffscreenCanvas(renderer.canvas as OffscreenCanvas);
         } catch (err) {

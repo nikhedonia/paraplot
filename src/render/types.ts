@@ -28,21 +28,25 @@ export interface FrameArgs {
   floorY: number;
   /** internal resolution scale (quality × draft × adaptive) */
   scale: number;
-  /** ask the worker to finish the GPU work so this frame can be timed */
+  /** ask the worker to sync the GPU so renderMs is a real frame time */
   probe?: boolean;
 }
 
 export interface FrameInfo {
   width: number;
   height: number;
-  /** wall time spent drawing (including gl.finish for probe frames) */
+  /** wall time spent drawing (including a GPU sync in the render worker) */
   renderMs?: number;
+  /** a program was linked for this frame, so renderMs includes compile time */
+  compiled?: boolean;
 }
 
 export interface BackendHooks {
   /** called after a frame has been drawn (possibly off-thread) */
   onFrame: (info: FrameInfo) => void;
   onError: (message: string | null) => void;
+  /** a lazily compiled analysis program has finished linking */
+  onProgramReady?: () => void;
   /** the GPU context is gone; the viewport should recreate the backend */
   onContextLost?: () => void;
 }

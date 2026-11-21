@@ -161,15 +161,16 @@ const blade = surface({
   a: root,                 // construction curve a(t), sampled into uniforms
   b: tip,                  // construction curve b(t), sampled into uniforms
   thickness: 0.06,         // solidify the sheet
-  samples: 64,             // rulings along t
+  samples: 32,             // rulings along t (construction curves use 32 points)
   // connect is GLSL, evaluated on the GPU; linear is the default:
   // connect: 'return mix(a, b, s);'
 });
 ```
 
 `surface` samples both construction curves at `samples + 1` values of `t` and
-uploads those edge points as opaque uniform arrays. The ruling interpolation is
-**not baked on the CPU**: the generated shader contains a function
+uploads those edge points into the point pool (sampled from a data texture). The
+ruling interpolation is **not baked on the CPU**: the generated shader contains a
+function
 
 ```glsl
 vec3 connectN(vec3 a, vec3 b, float s) { return mix(a, b, s); }
@@ -252,12 +253,35 @@ group({ t: [0, 1, 0], op: 'smoothUnion', k: 0.1 }, a, b);
 | `capsule({ a, b, r })` | `plane({ n, d })` |
 | `spline({ points, r, closed, seg })` | `extrude({ points, h, round })` |
 | `lathe({ points, seg })` | `implicit(equation, opts)` |
-| `surface({ a, b, thickness, samples })` | |
+| `surface({ a, b, thickness, samples })` | `polarRepeat({ count, offset }, shape)` |
 
 `box` and `cylinder` take half extents / total height and are centred on the
 origin. `lathe` revolves `[radius, y]` pairs around the Y axis; `extrude` sweeps
 an `[x, y]` profile along Z. `surface` lofts a solid sheet between two
 construction splines (see [Ruled surfaces](#ruled-surfaces)).
+
+## Polar arrays
+
+For identical copies arranged around the Y axis, prefer `polarRepeat` over a
+`union` of rotated copies:
+
+```js
+const blade = surface({ a: root, b: tip, thickness: 0.06, samples: 64 });
+
+const spread = k.sweep * Math.max(1, k.lean); // how far the blade sweeps back
+const blades = paint(
+  polarRepeat({ count: k.blades, spread, name: 'blades' }, blade),
+  k.brass,
+);
+```
+
+The generated shader folds the query point into the nearest angular sector and
+evaluates the child there, plus the neighbouring sectors the child overlaps
+(controlled by `spread`, measured behind the copy angle in degrees). `count`,
+`offset` and `spread` live in the uniform pool, so changing the blade count or
+sweep updates uniforms instead of recompiling the shader. A
+`union(range(n).map(i => rotate(...)))` would instead evaluate the whole child
+`n` times per raymarch sample and rebuild the shader whenever `n` changes.
 
 ### Set operations
 
@@ -473,26 +497,51 @@ The viewport only draws when something actually changes:
   with `?mainRender=1`.
 - **one frame in flight** — the loop never queues GPU work: if a worker frame is
   still running the vsync is dropped, not buffered. Slow GPUs therefore degrade
-  frame rate instead of input latency.
-- **adaptive resolution** — while animating, the internal scale drifts between
-  0.5× and 1× based on the acknowledged frame rate, so each submitted frame stays
-  inside the budget. The HUD resolution chip shows the result.
-- **draft + refine** — while orbiting/zooming the buffer drops to 0.62×, shadows
-  are skipped and the march budget is 88 steps; ~170 ms after the interaction
-  stops one full-quality frame is drawn at the configured quality.
-- **pixel budget** — the drawing buffer is capped at 2.6 MP, so 4K/retina screens
+  frame rate instead of input latency. The worker forces a real GPU sync and
+  reports the measured frame time back to the UI.
+- **adaptive quality** — the first frames are a probe at 30% quality; after that
+  a measured ramp picks a sustainable scale for idle frames (90 ms budget),
+  orbit/pan (40 ms budget) and animation (30 fps target). The slider is the
+  target; the HUD shows the actual scale and marks it `auto` when it is capped.
+- **draft + refine** — while orbiting/zooming the buffer drops to 0.62×,
+  shadows are skipped and the march budget is 88 steps; ~170 ms after the
+  interaction stops the viewport refines to its adaptive idle quality. Only
+  probe/ramp frames take a GPU sync, so normal interaction never stalls on a
+  readback.
+- **pixel budget** — the drawing buffer is capped at 2 MP, so 4K/retina screens
   automatically render at a lower internal scale.
+- **smooth live edits** — full compiles reuse the current animation time.
+  Graph-animated scenes (`build(k, t)`) wait for the next animation sample
+  instead of swapping in the compile-time pose; shader-clock-only scenes
+  (implicit `time`) upload the new program immediately. Changing a parameter
+  never snaps the scene back to `t = 0`; slider compiles are throttled to ~22 Hz
+  while the controls themselves stay immediate.
+- **lean shaded shader** — each view mode compiles only the code it needs, so
+  the default shaded program contains none of the curvature/gradient/zebra
+  functions; it also reuses the march hit's material and reads polygon points
+  once per edge. The gradient view reuses the four normal taps, and the
+  curvature view is capped to a lower scale (seven extra map calls per hit).
+- **fast shader compile** — polygon/path points are sampled from a float data
+  texture instead of dynamically indexing a large uniform array, and surface
+  loop bounds live in the uniform pool. On ANGLE/GL this cuts the shader
+  compile from >10 s to well under a second. Analysis variants are linked in
+  the background when the driver supports `KHR_parallel_shader_compile`.
+- **scaled shadows** — soft-shadow step count follows the render scale, so low
+  resolution frames do not pay for 30 shadow samples.
 - **no shader recompiles for numbers** — every geometric value lives in one
   uniform pool; parameter and time changes only upload uniforms. The shader text
-  only changes when the tree shape changes.
+  only changes when the tree shape changes. Repeating a shape with `polarRepeat`
+  keeps its copy count in a uniform too, and evaluates the child only once per
+  SDF sample.
 - **program cache** — compiled GL programs are kept in a small LRU keyed by the
-  shader source, so toggling a structural parameter or flipping between presets
-  is instant.
+  shader source and view mode, so switching render modes or structural
+  parameters reuses linked programs.
 - **module cache** — the parsed scene module is memoised by source.
 - **shader clock** — `time` in an implicit equation is a uniform, so a living
   surface needs zero javascript per frame.
-- **cheaper shading** — shadow rays are skipped for back-facing pixels, 30-step
-  soft shadows, and the ray/AABB clip rejects empty space before marching.
+- **cheaper shading** — shadow rays are skipped for back-facing pixels,
+  soft-shadow steps scale with resolution, and the ray/AABB clip rejects empty
+  space before marching.
 
 Measured on a software rasteriser (Chrome/SwiftShader) with a deliberately large
 scene (281 nodes, 2112 lines of generated GLSL), the worst main-thread stall

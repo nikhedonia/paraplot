@@ -40,7 +40,7 @@ function ProjectCard({
       <button className="card-main" onClick={() => onOpen(project.id)} title={`Open ${project.name}`}>
         <div className="thumb">
           {project.thumbnail ? (
-            <img src={project.thumbnail} alt="" />
+            <img src={project.thumbnail} alt="" loading="lazy" decoding="async" />
           ) : (
             <div className="thumb-empty">
               <Icon name="logo" size={24} />
@@ -73,7 +73,12 @@ function ExampleCard({ preset, onUse }: { preset: Preset; onUse: (preset: Preset
   return (
     <article className="example-card">
       <button className="example-main" onClick={() => onUse(preset)}>
-        <img src={`${EXAMPLE_BASE}${preset.id}.jpg`} alt={`${preset.name} render`} loading="lazy" />
+        <img
+          src={`${EXAMPLE_BASE}${preset.id}.jpg`}
+          alt={`${preset.name} render`}
+          loading="lazy"
+          decoding="async"
+        />
         <span className="example-overlay">
           <span>Open as project</span>
           <Icon name="chevron" size={13} />

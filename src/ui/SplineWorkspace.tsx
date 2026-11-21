@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import type { SplineInfo } from '../core/types';
 import { CombSettings } from './CombSettings';
 import { Icon } from './Icon';
@@ -31,7 +32,7 @@ export interface SplineWorkspaceProps {
  * The enlarged spline editor: control point editing on the left, a live
  * orbitable 3D preview of the swept shape on the right.
  */
-export function SplineWorkspace({
+function SplineWorkspaceImpl({
   splines,
   selected,
   comb,
@@ -170,3 +171,5 @@ export function SplineWorkspace({
     </section>
   );
 }
+
+export const SplineWorkspace = memo(SplineWorkspaceImpl);

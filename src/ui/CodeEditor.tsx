@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 
 export interface CodeEditorProps {
   value: string;
@@ -9,7 +9,7 @@ export interface CodeEditorProps {
   path?: string;
 }
 
-export function CodeEditor({
+function CodeEditorImpl({
   value,
   onChange,
   readOnly = false,
@@ -106,13 +106,14 @@ export function CodeEditor({
   }, [readOnly]);
 
   useEffect(() => {
+    if (!active) return;
     const editor = editorRef.current;
     if (!editor) return;
     const model = editor.getModel();
     if (model && model.getValue() !== value) {
       model.setValue(value);
     }
-  }, [value]);
+  }, [value, active]);
 
   useEffect(() => {
     if (!active) return;
@@ -139,3 +140,5 @@ export function CodeEditor({
     </div>
   );
 }
+
+export const CodeEditor = memo(CodeEditorImpl);

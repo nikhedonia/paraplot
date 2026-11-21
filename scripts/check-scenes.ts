@@ -247,8 +247,9 @@ if (sf.ok) {
     'default linear connect is emitted as GLSL',
   );
   ok(
-    sf.program.glsl.includes('for (int i = 0; i < 9; i++)') &&
-      sf.program.glsl.includes('connect0(a, b, float(j) / float(1))'),
+    sf.program.glsl.includes('int rulings = int(') &&
+      sf.program.glsl.includes('for (int i = 0; i < rulings; i++)') &&
+      sf.program.glsl.includes('connect0(a, b, float(j) / float(across))'),
     'the shader evaluates the connect per ruling',
   );
   ok(!('sections' in node), 'rulings are not baked on the CPU');
@@ -280,7 +281,11 @@ const bowed = compileScene(CUSTOM_CONNECT, {}, {});
 ok(bowed.ok, `custom connect compiles${bowed.ok ? '' : `: ${bowed.error}`}`);
 if (bowed.ok) {
   ok(bowed.program.glsl.includes('0.5 * sin(3.14159 * s)'), 'custom GLSL body is in the shader');
-  ok(bowed.program.glsl.includes('for (int j = 1; j <= 2; j++)'), 'sSamples subdivides the ruling loop');
+  ok(
+    bowed.program.glsl.includes('int across = int(') &&
+      bowed.program.glsl.includes('for (int j = 1; j <= across; j++)'),
+    'sSamples subdivides the ruling loop',
+  );
   ok(
     near(bowed.program.bounds.min, [-1.02, -1.02, -1.02]) &&
       near(bowed.program.bounds.max, [2.02, 2.02, 1.02]),
@@ -326,6 +331,36 @@ const jsConnect = compileScene(
   {},
 );
 ok(!jsConnect.ok && /must be GLSL/.test(jsConnect.error), 'surface() connect must be GLSL code');
+
+const REPEAT_SRC = String.raw`
+export default function build() {
+  return polarRepeat(
+    { count: 6, spread: 70, name: 'ring' },
+    translate([1.2, 0, 0], box({ s: [0.2, 0.1, 0.1] })),
+  );
+}`;
+const rep = compileScene(REPEAT_SRC, {}, {});
+ok(rep.ok, `polar repeat compiles${rep.ok ? '' : `: ${rep.error}`}`);
+if (rep.ok) {
+  const glsl = rep.program.glsl;
+  ok(
+    glsl.includes('atan(p.z, p.x)') &&
+      glsl.includes('mod(ang - radians(') &&
+      glsl.includes('int copies =') &&
+      glsl.includes('for (int j = 1; j <= copies; j++)') &&
+      glsl.includes('float a = ang + float(j) * sector') &&
+      glsl.includes('float b = ang - float(j) * sector'),
+    'repeat folds the overlapping sectors',
+  );
+  ok(glsl.includes('float count = max(') && glsl.includes('float spread = max('), 'copy count and spread are uniforms');
+  const r = Math.hypot(1.4, 0.1);
+  ok(
+    near(rep.program.bounds.min, [-r, -0.1, -r]) && near(rep.program.bounds.max, [r, 0.1, r]),
+    'repeat bounds cover the polar envelope',
+  );
+  const rep8 = compileScene(REPEAT_SRC.replace('count: 6', 'count: 8'), {}, {});
+  ok(rep8.ok && rep8.program.glsl === rep.program.glsl, 'changing the repeat count keeps the shader stable');
+}
 
 console.log('\ncolours');
 ok(normalizeHexColor('#abc') === '#aabbcc', 'short hex expands');

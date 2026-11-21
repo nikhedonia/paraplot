@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Aabb, SplineInfo } from '../core/types';
 import { buildSplinePreview } from '../core/splinePreview';
 import type { CompiledProgram } from '../core/codegen';
@@ -19,6 +19,17 @@ const PREVIEW_SETTINGS: RenderSettings = {
 
 const clamp = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v));
 
+/** keep the expensive preview rebuild off the pointer-move path */
+function useDebouncedValue<T>(value: T, ms: number): T {
+  const [v, setV] = useState(value);
+  useEffect(() => {
+    const id = window.setTimeout(() => setV(value), ms);
+    return () => window.clearTimeout(id);
+  }, [value, ms]);
+  return v;
+}
+const PREVIEW_DEBOUNCE_MS = 90;
+
 export interface SplineView3DProps {
   spline: SplineInfo | null;
   /** draw 3D curvature combs along the curve */
@@ -31,7 +42,7 @@ export interface SplineView3DProps {
  * A small orbitable raymarched preview of one spline/profile: the swept shape,
  * its control cage and handles, rendered with the same SDF pipeline.
  */
-export function SplineView3D({
+function SplineView3DImpl({
   spline,
   comb = false,
   density = 40,
@@ -47,14 +58,19 @@ export function SplineView3D({
   const framedFor = useRef<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // dragging a control point changes the spline on every pointer event; the
+  // 3D preview only needs to follow at a comfortable cadence
+  const previewSpline = useDebouncedValue(spline, PREVIEW_DEBOUNCE_MS);
+  // clears immediately when the selection disappears, lags only while editing
+  const activePreview = spline ? previewSpline : null;
   const program = useMemo(() => {
-    if (!spline) return null;
+    if (!activePreview) return null;
     try {
-      return buildSplinePreview(spline, comb, { density, scale });
+      return buildSplinePreview(activePreview, comb, { density, scale });
     } catch {
       return null;
     }
-  }, [spline, comb, density, scale]);
+  }, [activePreview, comb, density, scale]);
   programRef.current = program;
 
   const frame = useCallback((bounds: Aabb) => {
@@ -226,14 +242,14 @@ export function SplineView3D({
 
   /* ---- scene changes ---- */
   useEffect(() => {
-    if (!program || !spline) return;
-    if (framedFor.current !== spline.id) {
-      framedFor.current = spline.id;
+    if (!program || !activePreview) return;
+    if (framedFor.current !== activePreview.id) {
+      framedFor.current = activePreview.id;
       frame(program.bounds);
     } else {
       invalidateRef.current();
     }
-  }, [program, spline, frame]);
+  }, [program, activePreview, frame]);
 
   return (
     <div className="spline-view3d" ref={hostRef}>
@@ -252,3 +268,5 @@ export function SplineView3D({
     </div>
   );
 }
+
+export const SplineView3D = memo(SplineView3DImpl);

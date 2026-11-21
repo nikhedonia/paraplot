@@ -182,6 +182,38 @@ ${sig} {
         return `${sig} { vec2 q = vec2(length(p.xz), p.y); return vec2(sdPoly(q, ${off}, ${pts.length}), 0.0); }`;
       }
 
+      case 'repeat': {
+        const child = this.emit(node.child);
+        const count = this.f(node.count);
+        const offset = this.f(node.offset);
+        const spread = this.f(node.spread);
+        return `${sig} {
+  float count = max(${count}, 1.0);
+  float sector = 6.283185307179586 / count;
+  float spread = max(radians(${spread}), 0.0);
+  // copies whose angular interval intersects the folded sector. A swept child
+  // can overlap several neighbours; a child that fits at its copy angle only
+  // needs the identity sector.
+  int copies = sector >= 6.283185307179586
+    ? 0
+    : max(1, int(min(8.0, floor(0.5 + spread / sector))));
+  float rad = length(p.xz);
+  // atan(0, 0) is undefined; the axis folds to the child at radius zero
+  float ang = rad > 1e-6 ? atan(p.z, p.x) : 0.0;
+  ang = mod(ang - radians(${offset}) + 0.5 * sector, sector) - 0.5 * sector;
+  vec2 best = ${child}(vec3(cos(ang) * rad, p.y, sin(ang) * rad));
+  for (int j = 1; j <= copies; j++) {
+    float a = ang + float(j) * sector;
+    vec2 c1 = ${child}(vec3(cos(a) * rad, p.y, sin(a) * rad));
+    if (c1.x < best.x) best = c1;
+    float b = ang - float(j) * sector;
+    vec2 c2 = ${child}(vec3(cos(b) * rad, p.y, sin(b) * rad));
+    if (c2.x < best.x) best = c2;
+  }
+  return best;
+}`.trim();
+      }
+
       case 'surface': {
         const edges = node.edges;
         if (!edges || edges.a.length === 0) return `${sig} { return vec2(1e6, 0.0); }`;
@@ -197,16 +229,22 @@ ${sig} {
         if (/\bu_time\b/.test(node.connect)) this.usesTime = true;
         const body = /\breturn\b/.test(node.connect) ? node.connect : `return ${node.connect};`;
         this.fns.push(`vec3 ${connectName}(vec3 a, vec3 b, float s) { ${body} }`);
+        // keep the loop bounds in the uniform pool: a literal bound makes the
+        // compiler unroll every ruling, which can take >10 s on ANGLE/GL
+        const rulingsExpr = this.f(rulings);
+        const acrossExpr = this.f(across);
         return `
 ${sig} {
   float rr = ${rr};
   float d = 1e12;
-  for (int i = 0; i < ${rulings}; i++) {
-    vec3 a = v3(${offA} + 3 * i);
-    vec3 b = v3(${offB} + 3 * i);
+  int rulings = int(${rulingsExpr} + 0.5);
+  int across = int(${acrossExpr} + 0.5);
+  for (int i = 0; i < rulings; i++) {
+    vec3 a = point3(${offA} + 3 * i);
+    vec3 b = point3(${offB} + 3 * i);
     vec3 p0 = ${connectName}(a, b, 0.0);
-    for (int j = 1; j <= ${across}; j++) {
-      vec3 p1 = ${connectName}(a, b, float(j) / float(${across}));
+    for (int j = 1; j <= across; j++) {
+      vec3 p1 = ${connectName}(a, b, float(j) / float(across));
       d = min(d, sdCapsule(p, p0, p1, rr));
       p0 = p1;
     }
@@ -330,6 +368,10 @@ export function collectSplines(root: Node): SplineInfo[] {
       walk(n.b);
       return;
     }
+    if (n.kind === 'repeat') {
+      walk(n.child);
+      return;
+    }
     if (n.kind === 'op' || n.kind === 'group') n.children.forEach(walk);
     else if (n.kind === 'offset' || n.kind === 'shell' || n.kind === 'paint') walk(n.child);
   };
@@ -384,6 +426,14 @@ export function applySplineOverrides(root: Node, overrides: Record<string, numbe
       if (a === n.a && b === n.b) return n;
       // construction curves changed: the rulings must be resampled
       const next = { ...n, a, b, edges: undefined };
+      replaced.set(n, next);
+      return next;
+    }
+
+    if (n.kind === 'repeat') {
+      const child = walk(n.child);
+      if (child === n.child) return n;
+      const next = { ...n, child };
       replaced.set(n, next);
       return next;
     }

@@ -8,6 +8,7 @@ import type {
   LatheNode,
   SplinePointRef,
   SurfaceNode,
+  RepeatNode,
 } from './types';
 import { compileExpression } from './expr';
 import { DEFAULT_SURFACE_CONNECT } from './surface';
@@ -608,6 +609,47 @@ export const lathe = (o: LatheOpts): LatheNode =>
       name: typeof o.name === 'string' ? o.name : undefined,
     }),
   );
+
+/* ------------------------------------------------------------------ */
+/* polar repeat                                                        */
+/* ------------------------------------------------------------------ */
+
+export interface PolarRepeatOpts {
+  /** number of identical copies around the Y axis */
+  count: number;
+  /** angular offset of the first copy, degrees */
+  offset?: number;
+  /**
+   * angular width of the child behind the copy angle, degrees. Overlapping
+   * copies evaluate their neighbours; omit for a child that fits at its angle.
+   */
+  spread?: number;
+  /** label for the component tree */
+  name?: string;
+}
+
+/**
+ * A polar array of one shape around the Y axis. The shader folds the query
+ * point into the nearest sector and evaluates the child once, so the runtime
+ * cost is independent of `count`; count/offset are uniforms, so changing them
+ * does not recompile the shader.
+ */
+export function polarRepeat(o: PolarRepeatOpts, child: unknown): RepeatNode {
+  if (!o || typeof o !== 'object') fail('polarRepeat(): expected { count, ... }');
+  const count = Math.round(
+    numArg('polarRepeat', 'count', o.count, undefined, (n) => n >= 1 && n <= 256),
+  );
+  const kids = flatten([child], 'polarRepeat');
+  if (kids.length !== 1) fail('polarRepeat(): expected exactly one shape');
+  return mk({
+    kind: 'repeat' as const,
+    count,
+    offset: numArg('polarRepeat', 'offset', o.offset, 0),
+    spread: numArg('polarRepeat', 'spread', o.spread, 0, (n) => n >= 0),
+    child: kids[0],
+    name: typeof o.name === 'string' ? o.name : undefined,
+  });
+}
 
 /* ------------------------------------------------------------------ */
 /* numeric helpers + expression language                               */

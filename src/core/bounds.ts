@@ -100,6 +100,19 @@ export function boundsOf(node: Node): Aabb {
       return box([-r, y0, -r], [r, y1, r]);
     }
 
+    case 'repeat': {
+      // conservative cylinder around the Y axis; count does not change the
+      // envelope of a full polar array
+      const b = boundsOf(node.child);
+      const r = Math.max(
+        Math.hypot(b.min[0], b.min[2]),
+        Math.hypot(b.min[0], b.max[2]),
+        Math.hypot(b.max[0], b.min[2]),
+        Math.hypot(b.max[0], b.max[2]),
+      );
+      return box([-r, b.min[1], -r], [r, b.max[1], r]);
+    }
+
     case 'surface': {
       const resolved = node.edges ? node : (resolveSurfaces(node) as typeof node);
       const r = node.thickness * 0.5 + node.margin;

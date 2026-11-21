@@ -1,7 +1,29 @@
-import * as monaco from 'monaco-editor';
+// Import the editor API + core contributions directly instead of the
+// `monaco-editor` umbrella entry: the latter registers every bundled language
+// (and its loader) on startup, none of which this app uses. Only the JS/C++
+// tokenizers and the TypeScript service (for the DSL types) are kept.
+import * as monaco from 'monaco-editor/esm/vs/editor/editor.api.js';
+import 'monaco-editor/esm/vs/editor/editor.all.js';
+import 'monaco-editor/esm/vs/editor/common/standaloneStrings.js';
+import 'monaco-editor/esm/vs/basic-languages/javascript/javascript.contribution.js';
+import 'monaco-editor/esm/vs/basic-languages/cpp/cpp.contribution.js';
+import * as tsContribution from 'monaco-editor/esm/vs/language/typescript/monaco.contribution.js';
 import EditorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
 import TsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker';
 import { DSL_TYPES } from './core/typings';
+
+interface TsDefaults {
+  setCompilerOptions(options: Record<string, unknown>): void;
+  setDiagnosticsOptions(options: Record<string, unknown>): void;
+  addExtraLib(content: string, filePath?: string): { dispose(): void };
+}
+
+interface TsApi {
+  javascriptDefaults: TsDefaults;
+  ScriptTarget: { ES2020: number };
+  ModuleKind: { ESNext: number };
+  ModuleResolutionKind: { NodeJs: number };
+}
 
 declare global {
   interface Window {
@@ -23,16 +45,7 @@ export function setupMonaco(): typeof monaco {
   ready = true;
 
   // monaco 0.55 types the namespace as deprecated but ships it at runtime
-  const ts = monaco.languages.typescript as unknown as {
-    javascriptDefaults: {
-      setCompilerOptions(options: Record<string, unknown>): void;
-      setDiagnosticsOptions(options: Record<string, unknown>): void;
-      addExtraLib(content: string, filePath?: string): { dispose(): void };
-    };
-    ScriptTarget: { ES2020: number };
-    ModuleKind: { ESNext: number };
-    ModuleResolutionKind: { NodeJs: number };
-  };
+  const ts = tsContribution as unknown as TsApi;
   const js = ts.javascriptDefaults;
   js.setCompilerOptions({
     target: ts.ScriptTarget.ES2020,

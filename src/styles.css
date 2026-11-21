@@ -530,11 +530,12 @@ body.resizing {
   font-family: var(--mono);
   font-size: 9.5px;
   color: var(--text-2);
-  background: rgba(10, 14, 18, 0.66);
+  /* no backdrop-filter: this sits over the live WebGL canvas and would
+     force the compositor to re-blur the canvas on every rendered frame */
+  background: rgba(10, 14, 18, 0.82);
   border: 1px solid rgba(36, 48, 57, 0.7);
   border-radius: 3px;
   padding: 3px 6px;
-  backdrop-filter: blur(6px);
   letter-spacing: 0.03em;
 }
 
@@ -560,12 +561,11 @@ body.resizing {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: rgba(10, 14, 18, 0.66);
+  background: rgba(10, 14, 18, 0.82);
   border: 1px solid rgba(36, 48, 57, 0.7);
   border-radius: 4px;
   color: var(--dim);
-  transition: all 0.12s ease;
-  backdrop-filter: blur(6px);
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
 }
 
 .iconbtn:hover {
@@ -585,8 +585,7 @@ body.resizing {
   border: 1px solid rgba(36, 48, 57, 0.8);
   border-radius: 4px;
   overflow: hidden;
-  background: rgba(10, 14, 18, 0.66);
-  backdrop-filter: blur(6px);
+  background: rgba(10, 14, 18, 0.82);
 }
 
 .segmented button {
@@ -640,8 +639,7 @@ body.resizing {
   text-align: center;
   padding: 30px;
   white-space: pre-wrap;
-  background: rgba(8, 11, 14, 0.9);
-  backdrop-filter: blur(2px);
+  background: rgba(8, 11, 14, 0.94);
 }
 
 .render-error {
@@ -2186,14 +2184,13 @@ select {
 .hud-select {
   height: 26px;
   padding: 0 4px;
-  background: rgba(10, 14, 18, 0.66);
+  background: rgba(10, 14, 18, 0.82);
   border: 1px solid rgba(36, 48, 57, 0.7);
   border-radius: 4px;
   color: var(--text-2);
   font-family: var(--mono);
   font-size: 9.5px;
   outline: none;
-  backdrop-filter: blur(6px);
   text-transform: lowercase;
 }
 
@@ -2227,10 +2224,9 @@ select {
   gap: 5px;
   width: 212px;
   padding: 9px 10px 8px;
-  background: rgba(10, 14, 18, 0.84);
+  background: rgba(10, 14, 18, 0.9);
   border: 1px solid rgba(36, 48, 57, 0.8);
   border-radius: 5px;
-  backdrop-filter: blur(8px);
   pointer-events: auto;
 }
 
@@ -2570,11 +2566,10 @@ select {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(10, 13, 17, 0.78);
+  background: rgba(10, 13, 17, 0.88);
   border: 1px solid var(--line);
   border-radius: 3px;
   color: var(--dim);
-  backdrop-filter: blur(4px);
 }
 
 .canvas-fit:hover {
@@ -2753,11 +2748,12 @@ select {
   color: #e08a8a;
 }
 
-/* first-paint preview: the stored thumbnail plus a spinner until a frame lands */
+/* first-paint preview: the stored thumbnail plus a spinner until a frame lands.
+   Keep it below the HUD so quality/play controls stay usable while preparing. */
 .viewport-boot {
   position: absolute;
   inset: 0;
-  z-index: 4;
+  z-index: 1;
   overflow: hidden;
   display: flex;
   align-items: center;
@@ -2777,8 +2773,7 @@ select {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  transform: scale(1.02);
-  filter: blur(2px) brightness(0.48) saturate(0.85);
+  opacity: 0.55;
   user-select: none;
 }
 
@@ -2811,9 +2806,8 @@ select {
   padding: 13px 15px;
   border: 1px solid rgba(46, 60, 72, 0.85);
   border-radius: 8px;
-  background: rgba(10, 14, 18, 0.78);
+  background: rgba(10, 14, 18, 0.92);
   box-shadow: 0 18px 48px rgba(0, 0, 0, 0.38);
-  backdrop-filter: blur(10px);
 }
 
 .boot-copy {
@@ -2865,8 +2859,7 @@ select {
   padding: 0 7px;
   border: 1px solid rgba(36, 48, 57, 0.7);
   border-radius: 3px;
-  background: rgba(10, 14, 18, 0.66);
-  backdrop-filter: blur(6px);
+  background: rgba(10, 14, 18, 0.82);
   font-family: var(--mono);
   font-size: 9.5px;
   color: var(--dim);
@@ -2985,28 +2978,104 @@ select {
   color: #e08a8a;
 }
 
-.source-preview-text {
+.source-code {
+  position: relative;
   flex: 1;
   min-height: 0;
+}
+
+.source-highlight,
+.source-preview-text {
+  position: absolute;
+  inset: 0;
+  box-sizing: border-box;
   width: 100%;
+  height: 100%;
   margin: 0;
   padding: 12px 14px 28px;
   border: 0;
-  outline: none;
-  resize: none;
-  background: transparent;
   font-family: var(--mono);
   font-size: 12.5px;
+  font-weight: 400;
   line-height: 19px;
-  color: var(--text-2);
+  letter-spacing: 0;
   white-space: pre;
   tab-size: 2;
-  overflow: auto;
 }
 
-.source-preview-text[readonly] {
-  color: var(--dim);
+.source-highlight {
+  overflow: hidden;
+  color: #cfd8e0;
+  pointer-events: none;
+}
+
+.source-highlight code {
+  font: inherit;
+}
+
+.source-preview-text {
+  z-index: 1;
+  resize: none;
+  outline: none;
+  overflow: auto;
+  background: transparent;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  caret-color: var(--accent);
+}
+
+.source-preview-text::selection {
+  background: #223040;
+}
+
+.source-preview.is-readonly .source-highlight {
+  opacity: 0.62;
+}
+
+.source-preview.is-readonly .source-preview-text {
+  caret-color: transparent;
   cursor: default;
+}
+
+.tok-comment {
+  color: #5d6b76;
+  font-style: italic;
+}
+
+.tok-keyword {
+  color: #c9a0dc;
+}
+
+.tok-string {
+  color: #9dc2a0;
+}
+
+.tok-number {
+  color: #e0a267;
+}
+
+.tok-type {
+  color: #7fb6c9;
+}
+
+.tok-function {
+  color: #82c7c0;
+}
+
+.tok-operator {
+  color: #9aa8b4;
+}
+
+.tok-punct {
+  color: #7b8894;
+}
+
+.tok-ident {
+  color: #cfd8e0;
+}
+
+.tok-plain {
+  color: inherit;
 }
 
 .tree-busy {

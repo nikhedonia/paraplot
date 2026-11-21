@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import { findTreeNode, type TreeNode } from '../core/sceneTree';
 import { Icon } from './Icon';
 
@@ -14,7 +14,7 @@ export interface ComponentTreeProps {
 }
 
 const kindClass = (kind: string): string => {
-  if (kind === 'group') return 'group';
+  if (kind === 'group' || kind === 'repeat') return 'group';
   if (kind === 'op') return 'op';
   if (kind === 'paint' || kind === 'offset' || kind === 'shell') return 'mod';
   if (kind === 'implicit') return 'impl';
@@ -142,7 +142,7 @@ function Row({
   );
 }
 
-export function ComponentTree({
+function ComponentTreeImpl({
   tree,
   hidden,
   isolated,
@@ -211,3 +211,5 @@ export function ComponentTree({
     </div>
   );
 }
+
+export const ComponentTree = memo(ComponentTreeImpl);

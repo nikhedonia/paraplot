@@ -58,6 +58,9 @@ export function App() {
     window.location.hash = id ? `#/p/${encodeURIComponent(id)}` : '#/';
   }, []);
 
+  // stable so memo(Editor) is not defeated by App re-renders (saves, etc.)
+  const exit = useCallback(() => go(null), [go]);
+
   // load the project named by the route
   useEffect(() => {
     if (!routeId) {
@@ -136,7 +139,7 @@ export function App() {
         key={active.id}
         initial={active}
         onSaved={onSaved}
-        onExit={() => go(null)}
+        onExit={exit}
       />
     );
   }

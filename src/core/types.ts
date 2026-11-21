@@ -69,7 +69,8 @@ export type Node =
   | OffsetNode
   | ShellNode
   | PaintNode
-  | SurfaceNode;
+  | SurfaceNode
+  | RepeatNode;
 
 export interface SphereNode {
   kind: 'sphere';
@@ -197,6 +198,24 @@ export interface PaintNode {
   color: Vec3;
   rough: number;
   child: Node;
+}
+
+/**
+ * A polar array of one shape around the Y axis. The shader folds the query
+ * point into the nearest sector and evaluates the child once, so the runtime
+ * cost is independent of `count`; count/offset are uniforms, so changing them
+ * does not recompile the shader.
+ */
+export interface RepeatNode {
+  kind: 'repeat';
+  /** number of identical copies (rounded to an integer) */
+  count: number;
+  /** angular offset of the first copy, degrees */
+  offset: number;
+  /** angular width of the child behind the copy angle, degrees */
+  spread: number;
+  child: Node;
+  name?: string;
 }
 
 /**

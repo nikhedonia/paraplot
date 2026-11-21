@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 import { track } from '../analytics';
 import type { CompileOutcome, CompileSuccess } from '../core/compileProtocol';
@@ -13,6 +13,7 @@ import { CodeEditor } from './CodeEditor';
 import { ComponentTree } from './ComponentTree';
 import { Icon } from './Icon';
 import { ParamPanel } from './ParamPanel';
+import { SourcePreview } from './SourcePreview';
 import { SplineEditor, type SplinePlane } from './SplineEditor';
 import {
   SplineWorkspace,
@@ -23,49 +24,6 @@ import { Viewport } from './Viewport';
 
 type Tab = 'tree' | 'scene' | 'shader';
 
-/**
- * Lightweight source view shown until the user opens Monaco. It is a real
- * textarea, so it can be read-only during the first compile and editable as
- * soon as the result arrives, without loading the heavy editor bundle.
- */
-function SourcePreview({
-  value,
-  note,
-  busy = false,
-  readOnly = false,
-  onChange,
-  onActivate,
-}: {
-  value: string;
-  note: string;
-  busy?: boolean;
-  readOnly?: boolean;
-  onChange?: (value: string) => void;
-  onActivate?: () => void;
-}) {
-  return (
-    <div className="source-preview">
-      <div className="source-preview-note">
-        {busy ? <span className="spinner mini" /> : <Icon name="code" size={11} />}
-        <span>{note}</span>
-        {onActivate && (
-          <button className="ghostbtn source-preview-edit" onClick={onActivate}>
-            full editor
-          </button>
-        )}
-      </div>
-      <textarea
-        className="source-preview-text"
-        value={value}
-        readOnly={readOnly}
-        onChange={(e) => onChange?.(e.target.value)}
-        spellCheck={false}
-        wrap="off"
-        aria-label="scene source"
-      />
-    </div>
-  );
-}
 type SaveState = 'saved' | 'pending' | 'saving' | 'error';
 
 function useDebounced<T>(value: T, ms: number): T {
@@ -77,8 +35,44 @@ function useDebounced<T>(value: T, ms: number): T {
   return v;
 }
 
+/**
+ * Leading + trailing throttle. Sliders can emit faster than the worker can
+ * compile; this keeps the viewport live during a drag without re-rendering on
+ * every pointer sample.
+ */
+function useThrottled<T>(value: T, ms: number): T {
+  const [v, setV] = useState(value);
+  const last = useRef(0);
+  const timer = useRef(0);
+  useEffect(() => {
+    const now = performance.now();
+    const elapsed = now - last.current;
+    if (elapsed >= ms) {
+      last.current = now;
+      setV(value);
+    } else {
+      if (timer.current) window.clearTimeout(timer.current);
+      timer.current = window.setTimeout(() => {
+        timer.current = 0;
+        last.current = performance.now();
+        setV(value);
+      }, ms - elapsed);
+    }
+    return () => {
+      if (timer.current) {
+        window.clearTimeout(timer.current);
+        timer.current = 0;
+      }
+    };
+  }, [value, ms]);
+  return v;
+}
+
 const MIN_SPLIT = 24;
 const MAX_SPLIT = 72;
+
+/** start fetching the editor bundle once, after the first rendered frame */
+let monacoPrefetchStarted = false;
 
 function loadSplit(): number {
   try {
@@ -133,7 +127,7 @@ export interface EditorProps {
   onExit: () => void;
 }
 
-export function Editor({ initial, onSaved, onExit }: EditorProps) {
+function EditorImpl({ initial, onSaved, onExit }: EditorProps) {
   const [name, setName] = useState(initial.name);
   const [source, setSource] = useState(initial.source);
   const [paramValues, setParamValues] = useState<ParamValues>(initial.params ?? {});
@@ -171,6 +165,10 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
   const [isolated, setIsolated] = useState<string | null>(null);
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   const [frameSignal, setFrameSignal] = useState(0);
+  // the tree pane stays mounted (CSS hides it); keep the last snapshot while
+  // another tab is active so live numeric details don't re-render the whole
+  // tree on every slider tick
+  const treeSnapshotRef = useRef<TreeNode | null>(null);
   const splinePlacementRef = useRef(splinePlacement);
   splinePlacementRef.current = splinePlacement;
   const settingsRef = useRef(settings);
@@ -179,7 +177,17 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
   /* editor / viewport split */
   const [split, setSplit] = useState<number>(loadSplit);
   const [views, setViews] = useState<ViewState>(loadViews);
-  const [chromeReady, setChromeReady] = useState(false);
+  const [monacoTabs, setMonacoTabs] = useState<Set<'scene' | 'shader'>>(() => new Set());
+  /** Monaco panes are created on first use and then kept mounted, so tab
+   *  switches are instant and the undo stack/scroll position survive */
+  const openMonaco = useCallback((key: 'scene' | 'shader') => {
+    setMonacoTabs((prev) => {
+      if (prev.has(key)) return prev;
+      const next = new Set(prev);
+      next.add(key);
+      return next;
+    });
+  }, []);
   useEffect(() => {
     saveViews(views);
   }, [views]);
@@ -187,12 +195,28 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
   const splitDrag = useRef(false);
 
   const debouncedSource = useDebounced(source, 110);
+  // slider drags can emit far faster than a full scene compile; the panel
+  // stays immediate, the viewport updates at ~22 Hz plus the final value
+  const compileValues = useThrottled(paramValues, 45);
   const [client] = useState(() => new CompileClient());
   useEffect(() => () => client.dispose(), [client]);
 
   const [compiled, setCompiled] = useState<CompileOutcome | null>(null);
   const [compiling, setCompiling] = useState(true);
   const requestSeq = useRef(0);
+
+  // fetch Monaco while the GPU is already busy: opening the full editor should
+  // not pay for a multi-megabyte download at the moment of the click
+  const prefetchMonaco = useCallback(() => {
+    if (monacoPrefetchStarted) return;
+    monacoPrefetchStarted = true;
+    const idle = (window as Window & {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+    }).requestIdleCallback;
+    const load = () => void import('../monaco-setup');
+    if (idle) idle(load, { timeout: 5000 });
+    else window.setTimeout(load, 2500);
+  }, []);
   const filters = useMemo(
     () => ({ hidden: [...hidden], isolated }),
     [hidden, isolated],
@@ -204,26 +228,30 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
     setCompiling(true);
     let cancelled = false;
     void client
-      .compile({ source: debouncedSource, values: paramValues, overrides, filters })
+      .compile({ source: debouncedSource, values: compileValues, overrides, filters })
       .then((res) => {
         if (cancelled || seq !== requestSeq.current || !res) return;
-        setCompiled(res);
         setCompiling(false);
+        // the scene swap is not urgent: typing and slider drags stay at
+        // input priority even when a heavy compile result arrives
+        startTransition(() => setCompiled(res));
       })
       .catch((err: unknown) => {
         if (cancelled || seq !== requestSeq.current) return;
-        setCompiled({
-          ok: false,
-          error: (err as Error)?.message ?? String(err),
-          schema: {},
-          ms: 0,
-        });
         setCompiling(false);
+        startTransition(() =>
+          setCompiled({
+            ok: false,
+            error: (err as Error)?.message ?? String(err),
+            schema: {},
+            ms: 0,
+          }),
+        );
       });
     return () => {
       cancelled = true;
     };
-  }, [client, debouncedSource, paramValues, overrides, filters]);
+  }, [client, debouncedSource, compileValues, overrides, filters]);
 
   const lastGood = useRef<CompileSuccess | null>(null);
   useEffect(() => {
@@ -271,7 +299,6 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
   const splines = good?.splines ?? [];
   const tree = good?.tree ?? null;
   const schema = compiled?.schema ?? good?.schema ?? {};
-  const values = good?.values ?? {};
 
   // the animated clock asks the worker for the next scene; it never compiles
   // on the main thread and never touches react state
@@ -295,6 +322,12 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
     walk(tree);
     return n;
   }, [tree]);
+
+  useEffect(() => {
+    if (tab === 'tree' && tree) treeSnapshotRef.current = tree;
+  }, [tab, tree]);
+
+  const treeForView = tab === 'tree' ? tree : treeSnapshotRef.current;
 
   useEffect(() => {
     const ids = splines.map((s) => s.id);
@@ -486,6 +519,10 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
     setSplinePlacement(next);
   }, []);
 
+  const dockSpline = useCallback(() => placeSpline('dock'), [placeSpline]);
+  const selectNode = useCallback((id: string | null) => setSelectedNode(id), []);
+  const resetParams = useCallback(() => setParamValues({}), []);
+
   const toggleComb = useCallback((enabled: boolean) => {
     track('curvature_comb', { enabled });
     setComb(enabled);
@@ -633,7 +670,7 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
       onComb={toggleComb}
       onPlane={setSplinePlane}
       onView={setSplineView}
-      onClose={() => placeSpline('dock')}
+      onClose={dockSpline}
     />
   );
 
@@ -781,7 +818,7 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
               className={`tab ${tab === 'scene' ? 'active' : ''}`}
               onClick={() => {
                 setTab('scene');
-                setChromeReady(true);
+                openMonaco('scene');
               }}
             >
               <span className="filedot js" />
@@ -791,7 +828,7 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
               className={`tab ${tab === 'shader' ? 'active' : ''}`}
               onClick={() => {
                 setTab('shader');
-                setChromeReady(true);
+                openMonaco('shader');
               }}
             >
               <span className="filedot glsl" />
@@ -809,13 +846,13 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
 
           <div className="editor-stack">
             <div className={`editor-layer tree-layer ${tab === 'tree' ? 'visible' : ''}`}>
-              {tree ? (
+              {treeForView ? (
                 <ComponentTree
-                  tree={tree}
+                  tree={treeForView}
                   hidden={hidden}
                   isolated={isolated}
                   selected={selectedNode}
-                  onSelect={(id) => setSelectedNode(id)}
+                  onSelect={selectNode}
                   onToggleHidden={toggleHidden}
                   onSolo={solo}
                   onClear={clearFilters}
@@ -833,48 +870,41 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
             </div>
 
             <div className={`editor-layer ${tab === 'scene' ? 'visible' : ''}`}>
-              {tab === 'scene' &&
-                (chromeReady ? (
-                  <CodeEditor
-                    value={source}
-                    onChange={setSource}
-                    readOnly={initialCompiling}
-                    active={splinePlacement !== 'editor'}
-                    path="scene.js"
-                  />
-                ) : (
-                  <SourcePreview
-                    value={source}
-                    busy={initialCompiling}
-                    readOnly={initialCompiling}
-                    onChange={setSource}
-                    note={
-                      initialCompiling
-                        ? 'compiling the scene — the source is read-only until it is ready'
-                        : 'basic source editor — open the full editor for Monaco'
-                    }
-                    onActivate={() => setChromeReady(true)}
-                  />
-                ))}
+              {monacoTabs.has('scene') ? (
+                <CodeEditor
+                  value={source}
+                  onChange={setSource}
+                  readOnly={initialCompiling}
+                  active={splinePlacement !== 'editor' && tab === 'scene'}
+                  path="scene.js"
+                />
+              ) : (
+                <SourcePreview
+                  value={source}
+                  busy={initialCompiling}
+                  readOnly={initialCompiling}
+                  onChange={setSource}
+                  note={
+                    initialCompiling
+                      ? 'compiling the scene — the source is read-only until it is ready'
+                      : 'basic source editor — open the full editor for Monaco'
+                  }
+                  onActivate={() => openMonaco('scene')}
+                />
+              )}
             </div>
             <div className={`editor-layer ${tab === 'shader' ? 'visible' : ''}`}>
-              {tab === 'shader' &&
-                (chromeReady ? (
-                  <CodeEditor
-                    value={displayProgram?.glsl ?? '// compile a scene to see the generated shader'}
-                    readOnly
-                    language="cpp"
-                    active={splinePlacement !== 'editor'}
-                    path="shader.glsl"
-                  />
-                ) : (
-                  <SourcePreview
-                    value={displayProgram?.glsl ?? '// compile a scene to see the generated shader'}
-                    readOnly
-                    note="read-only generated GLSL"
-                    onActivate={() => setChromeReady(true)}
-                  />
-                ))}
+              {/* keep the shader pane mounted once opened, but do not build it
+                  (and tokenise the generated GLSL) before the tab is used */}
+              {monacoTabs.has('shader') && (
+                <CodeEditor
+                  value={displayProgram?.glsl ?? '// compile a scene to see the generated shader'}
+                  readOnly
+                  language="cpp"
+                  active={splinePlacement !== 'editor' && tab === 'shader'}
+                  path="shader.glsl"
+                />
+              )}
             </div>
           </div>
 
@@ -940,6 +970,7 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
             settings={settings}
             onSettings={updateSettings}
             onError={setRenderError}
+            onFirstFrame={prefetchMonaco}
             animate={animate}
             animated={good?.animated ?? false}
             playing={playing}
@@ -967,9 +998,9 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
           <div className="dock">
             <ParamPanel
               schema={compiled?.schema ?? schema}
-              values={values}
+              values={paramValues}
               onChange={setParamValues}
-              onReset={() => setParamValues({})}
+              onReset={resetParams}
             />
             {splinePlacement === 'dock' ? (
               <SplineEditor
@@ -1053,3 +1084,5 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
     </div>
   );
 }
+
+export const Editor = memo(EditorImpl);

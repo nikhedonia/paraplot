@@ -303,12 +303,19 @@ export default function build(k, t) {
     a: rootEdge,
     b: tipEdge,
     thickness: T,
-    samples: 64,
+    // the construction curves are sampled at 32 points; denser rulings do not
+    // add edge detail and triple the cost of the overlapping-sector fold
+    samples: 32,
     connect: 'return mix(a, b, s);',
   });
 
-  const blades = paint(union(range(k.blades).map((i) =>
-    rotate([0, (i * 360) / k.blades, 0], blade))), k.brass);
+  // one blade, folded around the axis on the GPU: the shader evaluates only the
+  // sectors the swept blade actually overlaps, whatever the blade count is
+  const spread = k.sweep * Math.max(1, k.lean);
+  const blades = paint(
+    polarRepeat({ count: k.blades, spread, name: 'blades' }, blade),
+    k.brass,
+  );
 
   // --- disc, rim and lathe hub
   const disc = paint(translate([0, discH * 0.5, 0],

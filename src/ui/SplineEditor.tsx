@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from 'react';
 import type { SplineInfo } from '../core/types';
 import { curvatureCombs, sampleProfile, sampleSpline } from '../core/spline';
@@ -68,7 +68,7 @@ function niceStep(raw: number): number {
 
 const AXIS_COLORS = ['#d98a7a', '#8fc79a', '#7fa6d9'];
 
-export function SplineEditor({
+function SplineEditorImpl({
   splines,
   selected,
   onSelect,
@@ -94,9 +94,30 @@ export function SplineEditor({
   const panRef = useRef<{ x: number; y: number } | null>(null);
   const [view, setView] = useState<View | null>(null);
   const viewRef = useRef<View>({ cx: 0, cy: 0, scale: 60 });
+  /** hover updates are coalesced to one React render per animation frame */
+  const hoverRef = useRef<{ x: number; y: number } | null>(null);
+  const hoverRaf = useRef(0);
+  /** drag updates are coalesced too: at most one compile request per frame */
+  const pendingDrag = useRef<{ id: string; points: number[][] } | null>(null);
+  const dragRaf = useRef(0);
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+
+  // never leave a queued frame behind when the editor unmounts
+  useEffect(() => {
+    return () => {
+      if (hoverRaf.current) cancelAnimationFrame(hoverRaf.current);
+      if (dragRaf.current) cancelAnimationFrame(dragRaf.current);
+    };
+  }, []);
 
   const spline = splines.find((s) => s.id === selected) ?? splines[0] ?? null;
-  const axes = spline ? axesFor(spline, plane) : ([0, 1] as [number, number]);
+  // keyed on the curve identity (not a fresh array every render) so the draw
+  // effect below only runs when the projection plane or curve actually changes
+  const axes = useMemo(
+    () => (spline ? axesFor(spline, plane) : ([0, 1] as [number, number])),
+    [spline, plane],
+  );
   const fitKey = spline
     ? `${spline.id}|${axes.join()}|${spline.points.length}|${Math.round(size.w)}x${Math.round(size.h)}|${fitNonce}`
     : '';
@@ -165,7 +186,13 @@ export function SplineEditor({
     return () => canvas.removeEventListener('wheel', onWheel);
   }, [size.w, size.h]);
 
+  // The wrap only exists once a spline has arrived. Depending on the presence
+  // of a spline (not on an empty [] deps list) is essential now that scenes
+  // compile asynchronously: otherwise the observer is attached too early and
+  // the canvas stays at its default 300x150 with nothing drawn.
+  const hasSpline = !!spline;
   useLayoutEffect(() => {
+    if (!hasSpline) return;
     const wrap = wrapRef.current;
     if (!wrap) return;
     const ro = new ResizeObserver(() => {
@@ -176,7 +203,7 @@ export function SplineEditor({
     const r = wrap.getBoundingClientRect();
     setSize({ w: Math.max(1, r.width), h: Math.max(1, r.height) });
     return () => ro.disconnect();
-  }, []);
+  }, [hasSpline]);
 
   /* ---- draw ---- */
   useLayoutEffect(() => {
@@ -323,6 +350,25 @@ export function SplineEditor({
     };
   };
 
+  const flushDrag = () => {
+    if (dragRaf.current) {
+      cancelAnimationFrame(dragRaf.current);
+      dragRaf.current = 0;
+    }
+    const pending = pendingDrag.current;
+    pendingDrag.current = null;
+    if (pending) onChangeRef.current(pending.id, pending.points);
+  };
+
+  const clearHover = () => {
+    hoverRef.current = null;
+    if (hoverRaf.current) {
+      cancelAnimationFrame(hoverRaf.current);
+      hoverRaf.current = 0;
+    }
+    setHover(null);
+  };
+
   const onPointerDown = (e: ReactPointerEvent) => {
     if (!spline) return;
     const canvas = canvasRef.current;
@@ -351,6 +397,7 @@ export function SplineEditor({
       }
     });
     if (best >= 0) {
+      clearHover();
       setActive(best);
       dragRef.current = best;
       e.preventDefault();
@@ -376,9 +423,24 @@ export function SplineEditor({
     }
     if (!spline) return;
     const w = toWorld(e);
-    setHover({ x: w.x, y: w.y });
     const idx = dragRef.current;
-    if (idx === null || idx >= spline.points.length) return;
+
+    if (idx === null || idx >= spline.points.length) {
+      // hover is a visual aid only: coalesce it to one render per frame
+      // instead of re-rendering (and redrawing the canvas) per pointer event
+      const prev = hoverRef.current;
+      if (!prev || prev.x !== w.x || prev.y !== w.y) {
+        hoverRef.current = { x: w.x, y: w.y };
+        if (!hoverRaf.current) {
+          hoverRaf.current = requestAnimationFrame(() => {
+            hoverRaf.current = 0;
+            setHover(hoverRef.current);
+          });
+        }
+      }
+      return;
+    }
+
     const pts = spline.points.map((p, i) => {
       if (i !== idx) return [...p];
       const next = [...p];
@@ -386,12 +448,23 @@ export function SplineEditor({
       next[axes[1]] = w.y;
       return next;
     });
-    onChange(spline.id, pts);
+    // dragging must not post a compile per pointer event (device rates can
+    // exceed 120 Hz); keep the newest points and flush once per frame
+    pendingDrag.current = { id: spline.id, points: pts };
+    if (!dragRaf.current) {
+      dragRaf.current = requestAnimationFrame(() => {
+        dragRaf.current = 0;
+        const pending = pendingDrag.current;
+        pendingDrag.current = null;
+        if (pending) onChangeRef.current(pending.id, pending.points);
+      });
+    }
   };
 
   const onPointerUp = (e: ReactPointerEvent) => {
     dragRef.current = null;
     panRef.current = null;
+    flushDrag();
     canvasRef.current?.classList.remove('panning');
     try {
       (e.target as HTMLElement).releasePointerCapture(e.pointerId);
@@ -423,6 +496,11 @@ export function SplineEditor({
 
   const is3d = spline?.dim === 3;
   const axisLabels = spline?.kind === 'lathe' ? ['r', 'y', 'z'] : AXIS_LABEL;
+  // debugging/testing hook for the 2D canvas; stringify only when it changes
+  const splineData = useMemo(
+    () => (spline ? JSON.stringify({ view: actualView, axes, points: spline.points }) : undefined),
+    [spline, actualView, axes],
+  );
 
   return (
     <section className="dock-panel splines">
@@ -492,14 +570,14 @@ export function SplineEditor({
 
           <div className="spline-canvas-wrap" ref={wrapRef}>
             <canvas
-              data-spline={JSON.stringify({ view: actualView, axes, points: spline.points })}
+              data-spline={splineData}
               ref={canvasRef}
               title="Drag a point to edit · drag empty space to pan · wheel to zoom"
               onPointerDown={onPointerDown}
               onPointerMove={onPointerMove}
               onPointerUp={onPointerUp}
               onPointerCancel={onPointerUp}
-              onPointerLeave={() => setHover(null)}
+              onPointerLeave={clearHover}
               onContextMenu={(e) => e.preventDefault()}
               onDoubleClick={(e) => {
                 const w = toWorld(e);
@@ -557,3 +635,5 @@ export function SplineEditor({
     </section>
   );
 }
+
+export const SplineEditor = memo(SplineEditorImpl);

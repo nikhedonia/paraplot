@@ -74,6 +74,11 @@ export function resolveSurfaces(root: Node): Node {
       return changed ? { ...node, children } : node;
     }
 
+    if (node.kind === 'repeat') {
+      const child = walk(node.child);
+      return child === node.child ? node : { ...node, child };
+    }
+
     if (node.kind === 'paint' || node.kind === 'offset' || node.kind === 'shell') {
       const child = walk(node.child);
       return child === node.child ? node : { ...node, child };
