@@ -7,6 +7,7 @@ import { PRESETS } from '../src/core/presets';
 import { compileExpression } from '../src/core/expr';
 import { curvatureCombs, sampleSpline } from '../src/core/spline';
 import { normalizeHexColor } from '../src/core/math';
+import { STARTER_SOURCE } from '../src/store/projects';
 import type { Node } from '../src/core/types';
 
 let failures = 0;
@@ -331,6 +332,9 @@ const jsConnect = compileScene(
   {},
 );
 ok(!jsConnect.ok && /must be GLSL/.test(jsConnect.error), 'surface() connect must be GLSL code');
+
+const starter = compileScene(STARTER_SOURCE, {}, {});
+ok(starter.ok, `typed starter compiles${starter.ok ? '' : `: ${starter.error}`}`);
 
 const TS_SCENE = String.raw`
 type Params = { size: number };

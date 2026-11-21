@@ -2,7 +2,7 @@
 
 A small parametric CAD / SDF modeller that runs in the browser.
 
-- **scene as code** — a pure javascript function builds a scene graph
+- **scene as code** — a pure TypeScript function builds a scene graph
 - **implicit surfaces** — shapes are signed distance fields, including custom equations
 - **set operations** — union, intersect, subtract with optional smooth blending
 - **groups & transforms** — local coordinate systems (translate / rotate / scale)
@@ -12,7 +12,7 @@ A small parametric CAD / SDF modeller that runs in the browser.
 - **WebGL2 raymarcher** — soft shadows, ambient occlusion, materials, ground grid
 - **smoothness analysis** — normals, mean curvature, gradient and zebra views, plus curvature combs
 - **renders on demand** — idle costs nothing; interactive frames are drafted and refined
-- **Monaco** — javascript editing with DSL typings, completions and a generated GLSL tab
+- **Monaco** — TypeScript scenes with inferred parameter types, DSL completions/docs and a generated GLSL tab
 
 ```
 npm install
@@ -23,7 +23,7 @@ npm run build
 
 ## Component tree
 
-The **components** tab (before `scene.js`) shows the compiled scene graph as a
+The **components** tab (before `scene.ts`) shows the compiled scene graph as a
 tree. Every node has two actions:
 
 - **eye** — hide that component (and its subtree). `subtract` keeps its base, so
@@ -97,15 +97,18 @@ in-memory store and shows a warning on the landing page.
 
 ## A scene
 
-```js
+```ts
 export const params = {
+  /** distance between the mounting holes */
   span:  num(2.4, { min: 1.2, max: 4, step: 0.01 }),
+  /** number of mounting holes */
   holes: int(4, { min: 1, max: 8 }),
+  /** plate colour */
   tint:  color('#c3ccd6'),
 };
 
-// pure: values in, shape out
-export default function build(k) {
+// pure: values in, shape out; k: typeof params types every control
+export default function build(k: typeof params) {
   const plate = translate([0, 0.07, 0],
     paint(box({ s: [k.span / 2, 0.07, 0.5], round: 0.03 }), k.tint));
 
@@ -121,6 +124,37 @@ export default function build(k) {
   return subtract(smoothUnion(0.05, plate, handle), ...holes);
 }
 ```
+
+## TypeScript scenes
+
+The scene tab is `scene.ts`. Monaco runs the TypeScript language service with
+the DSL declarations, so `params` controls, DSL functions and their options are
+completions with hover documentation. Type `k` as `typeof params`:
+
+```ts
+export const params = {
+  /** distance between the mounting holes */
+  span:  num(2.4, { min: 1.2, max: 4, step: 0.01 }),
+  /** number of mounting holes */
+  holes: int(4, { min: 1, max: 8 }),
+  /** plate colour */
+  tint:  color('#c3ccd6'),
+};
+
+export default function build(k: typeof params, t: number) {
+  // k.span: number, k.holes: number, k.tint: string, t: number
+  return rotate([0, t * 30, 0], box({ s: [k.span / 2, 0.07, 0.5] }));
+}
+```
+
+Omit `t` for a static scene. `defineScene(params, (k, t) => ...)` is an
+alternative that infers `k` without the annotation. Existing
+`export default function build(k)` scenes still work; add the `k: typeof params`
+annotation (or the JSDoc equivalent) to get the hints.
+
+Types are stripped in the compile worker (Sucrase), so scenes run directly in
+the browser with no separate build step. Plain JavaScript is valid TypeScript;
+existing projects open unchanged.
 
 ## Anchoring to splines
 
@@ -313,8 +347,8 @@ paint(node, '#e0a267', { rough: 0.35 });  // material
 `t` is the scene clock in seconds. Declare a second argument on the build
 function and the viewport re-evaluates the scene every frame while playing:
 
-```js
-export default function build(k, t) {
+```ts
+export default function build(k: typeof params, t: number) {
   const angle = t * k.speed * 360;           // degrees
   return rotate([0, angle, 0], sphere({ r: k.size }));
 }
@@ -326,7 +360,7 @@ want to avoid shader recompiles — numeric values are uniforms, so ordinary
 motion is free.
 
 Implicit equations get a built-in `time` uniform, which is the cheapest way to
-animate (no javascript runs per frame at all):
+animate (no scene-graph JavaScript runs per frame at all):
 
 ```js
 implicit('abs(sin(x*f + time*s) * cos(y*f)) - th', {
@@ -386,7 +420,7 @@ which is safe because modules are pure). The React app only holds the inputs
 (source, parameter values, spline points, clock) and feeds them back in.
 
 User code is executed with `new Function` in a scope containing only the DSL
-bindings (plus whatever globals javascript provides); it is a pure data
+bindings (plus whatever globals JavaScript provides); it is a pure data
 constructor by contract. Do not use `Date`, `Math.random` or DOM APIs if you
 want deterministic scenes.
 
@@ -538,7 +572,7 @@ The viewport only draws when something actually changes:
   parameters reuses linked programs.
 - **module cache** — the parsed scene module is memoised by source.
 - **shader clock** — `time` in an implicit equation is a uniform, so a living
-  surface needs zero javascript per frame.
+  surface needs zero scene-graph JavaScript per frame.
 - **cheaper shading** — shadow rays are skipped for back-facing pixels,
   soft-shadow steps scale with resolution, and the ray/AABB clip rejects empty
   space before marching.

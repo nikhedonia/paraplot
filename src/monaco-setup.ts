@@ -1,11 +1,12 @@
 // Import the editor API + core contributions directly instead of the
 // `monaco-editor` umbrella entry: the latter registers every bundled language
-// (and its loader) on startup, none of which this app uses. Only the JS/C++
-// tokenizers and the TypeScript service (for the DSL types) are kept.
+// (and its loader) on startup, none of which this app uses. Only the JS/TS/C++
+// tokenizers and the TypeScript language service are kept.
 import * as monaco from 'monaco-editor/esm/vs/editor/editor.api.js';
 import 'monaco-editor/esm/vs/editor/editor.all.js';
 import 'monaco-editor/esm/vs/editor/common/standaloneStrings.js';
 import 'monaco-editor/esm/vs/basic-languages/javascript/javascript.contribution.js';
+import 'monaco-editor/esm/vs/basic-languages/typescript/typescript.contribution.js';
 import 'monaco-editor/esm/vs/basic-languages/cpp/cpp.contribution.js';
 import * as tsContribution from 'monaco-editor/esm/vs/language/typescript/monaco.contribution.js';
 import EditorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';

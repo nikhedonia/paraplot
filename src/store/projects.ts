@@ -17,15 +17,18 @@ export interface ProjectRecord {
 }
 
 export const STARTER_SOURCE = String.raw`// A fresh paraplot project.
-// TypeScript scene: k is inferred from params, so completions and docs work.
+// k is typed from typeof params, so every control has a type and docs.
 
 export const params = {
+  /** Outer box size, in scene units. */
   size:  num(0.7,  { min: 0.3, max: 1.4, step: 0.01 }),
+  /** Edge rounding radius. */
   round: num(0.14, { min: 0.0, max: 0.3, step: 0.005 }),
+  /** Clay colour. */
   tint:  color('#c9d2da'),
 };
 
-export default defineScene(params, (k) => {
+export default function build(k: typeof params) {
   const shell = group({ name: 'shell' },
     paint(box({ s: [k.size, k.size, k.size], round: k.round }), k.tint));
 
@@ -33,7 +36,7 @@ export default defineScene(params, (k) => {
     sphere({ r: k.size * 0.66 }));
 
   return subtract(shell, cavity);
-});
+}
 `;
 
 const newId = (): string => {

@@ -5,18 +5,23 @@ export const DSL_TYPES = String.raw`
 /* ------------------------------------------------------------------
  * paraplot DSL — TypeScript scene
  *
- *   export const params = { size: num(1) };
- *   export default defineScene(params, (k, t) => { ... });
+ *   export const params = {
+ *     size: num(1, { min: 0.2, max: 2 }),
+ *     tint: color('#c9d2da'),
+ *   };
  *
- * k holds the resolved parameter values, t is the scene clock in seconds.
- * Declare t to animate the scene graph. Plain export default function
- * build(k) scenes still work; defineScene gives k its full inferred type.
+ *   export default function build(k: typeof params, t: number) { ... }
+ *
+ * k holds the resolved parameter values (so k.size is a number and k.tint is
+ * a string), and t is the scene clock in seconds. Declare t to animate the
+ * scene graph. defineScene(params, (k, t) => ...) is an alternative that
+ * infers k automatically.
  * ------------------------------------------------------------------ */
 
 type Vec2 = [number, number];
 type Vec3 = [number, number, number];
 
-/** An opaque shape in the scene graph. */
+/** An opaque scene-graph node returned by every DSL shape. */
 interface Solid {
   readonly kind: string;
 }
@@ -49,6 +54,10 @@ interface SplineSolid extends Solid {
  *     return paint(box({ s: k.size }), k.tint);
  *   });
  *
+ * The explicit alternative is:
+ *
+ *   export default function build(k: typeof params, t: number) { ... }
+ *
  * Omit t to build a static scene. The params argument is only used for type
  * inference; the runtime passes the resolved values to build.
  */
@@ -57,20 +66,31 @@ declare function defineScene<P extends object>(
   build: (k: P, t: number) => Solid,
 ): (k: P, t: number) => Solid;
 
+/** A point, or an opaque spline reference resolved at compile time. */
 type Point3 = Vec3 | SplinePoint;
+/** A shape, or an array / falsy value that can be flattened away. */
 type SolidInput = Solid | Solid[] | null | undefined | false;
 
 interface NumberOpts {
+  /** minimum slider value */
   min?: number;
+  /** maximum slider value */
   max?: number;
+  /** slider step; also the number of decimals shown */
   step?: number;
+  /** label shown in the parameter dock (defaults to the key) */
   label?: string;
+  /** unit shown next to the value */
   unit?: string;
 }
 interface Vec3Opts {
+  /** minimum value for each component */
   min?: number;
+  /** maximum value for each component */
   max?: number;
+  /** slider step for each component */
   step?: number;
+  /** label shown in the parameter dock (defaults to the key) */
   label?: string;
 }
 
@@ -159,27 +179,40 @@ declare function smoothSubtract(k: number, base: SolidInput, ...children: SolidI
 declare function offset(node: SolidInput, d: number): Solid;
 /** Hollow a shape, keeping a wall of thickness t. */
 declare function shell(node: SolidInput, t: number): Solid;
+interface PaintOpts {
+  /** surface roughness in [0, 1] (default 0.55) */
+  rough?: number;
+}
 /** Assign a material colour; the outermost paint wins. */
-declare function paint(node: SolidInput, hex: string, opts?: { rough?: number }): Solid;
+declare function paint(node: SolidInput, hex: string, opts?: PaintOpts): Solid;
 
 /* ---- primitives ---- */
 
+interface SphereOpts { /** radius (default 1) */ r?: number }
+interface BoxOpts { /** half extents */ s?: Vec3 | number; /** edge rounding */ round?: number }
+interface EllipsoidOpts { /** per-axis radii */ r?: Vec3 | number }
+interface TorusOpts { /** ring radius */ R?: number; /** tube radius */ r?: number }
+interface CylinderOpts { /** radius */ r?: number; /** total height */ h?: number; /** rounded rim */ round?: number }
+interface ConeOpts { /** base radius */ r?: number; /** total height */ h?: number }
+interface CapsuleOpts { /** start point */ a?: Point3; /** end point */ b?: Point3; /** radius */ r?: number }
+interface PlaneOpts { /** normal */ n?: Vec3; /** plane offset */ d?: number }
+
 /** Sphere of radius r. */
-declare function sphere(o?: { r?: number }): Solid;
+declare function sphere(o?: SphereOpts): Solid;
 /** Box with half extents s, optional rounded edges. */
-declare function box(o?: { s?: Vec3 | number; round?: number }): Solid;
+declare function box(o?: BoxOpts): Solid;
 /** Axis aligned ellipsoid. */
-declare function ellipsoid(o?: { r?: Vec3 | number }): Solid;
+declare function ellipsoid(o?: EllipsoidOpts): Solid;
 /** Torus around the y axis. */
-declare function torus(o?: { R?: number; r?: number }): Solid;
+declare function torus(o?: TorusOpts): Solid;
 /** Capped cylinder centred on the origin, optional rounded rim. */
-declare function cylinder(o?: { r?: number; h?: number; round?: number }): Solid;
+declare function cylinder(o?: CylinderOpts): Solid;
 /** Cone, apex on +y, base on -y. */
-declare function cone(o?: { r?: number; h?: number }): Solid;
+declare function cone(o?: ConeOpts): Solid;
 /** Capsule between two points (or spline point references). */
-declare function capsule(o?: { a?: Point3; b?: Point3; r?: number }): Solid;
+declare function capsule(o?: CapsuleOpts): Solid;
 /** Half space: dot(p, n) + d < 0 is inside. */
-declare function plane(o?: { n?: Vec3; d?: number }): Solid;
+declare function plane(o?: PlaneOpts): Solid;
 
 /* ---- implicit surfaces ---- */
 
@@ -290,7 +323,7 @@ declare function v3(x: number, y: number, z: number): Vec3;
 export const API_REFERENCE: Array<{ name: string; signature: string; note: string }> = [
   { name: 'params', signature: 'export const params = { … }', note: 'Constants + controls' },
   { name: 'defineScene', signature: 'export default defineScene(params, (k, t) => …)', note: 'Typed scene · k inferred' },
-  { name: 'build', signature: 'export default (k, t) => Solid', note: 'Pure scene function · t in seconds' },
+  { name: 'build', signature: 'build(k: typeof params, t?: number)', note: 'Pure scene function · typed args' },
   { name: 'group', signature: 'group({ t, r, s, op, k }, ...kids)', note: 'Local coordinates' },
   { name: 'union', signature: 'union(...kids)', note: 'min' },
   { name: 'intersect', signature: 'intersect(...kids)', note: 'max' },

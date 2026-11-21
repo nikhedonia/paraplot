@@ -11,20 +11,29 @@ const BRACKET = `// paraplot — a parametric handle bracket
 // Everything below is a pure function of params.
 
 export const params = {
+  /** distance between the rail ends */
   span:   num(2.4,  { min: 1.2, max: 4.0, step: 0.01,  label: 'span' }),
+  /** front-to-back plate depth */
   depth:  num(1.15, { min: 0.5, max: 2.2, step: 0.01,  label: 'depth' }),
+  /** plate thickness */
   plate:  num(0.14, { min: 0.06, max: 0.4, step: 0.005, label: 'plate' }),
+  /** handle height above the plate */
   lift:   num(1.45, { min: 0.4, max: 3.0, step: 0.01,  label: 'lift' }),
+  /** rail tube radius */
   tube:   num(0.055,{ min: 0.02, max: 0.14, step: 0.002, label: 'tube' }),
+  /** number of mounting holes */
   holes:  int(4,    { min: 1, max: 8, label: 'holes' }),
+  /** smooth blend radius between plate and handle */
   blend:  num(0.05, { min: 0.0, max: 0.25, step: 0.002, label: 'blend' }),
+  /** plate colour */
   finish: color('#c3ccd6', 'finish'),
+  /** rail colour */
   accent: color('#c08552', 'accent'),
+  /** cut the mounting holes */
   drill:  bool(true, 'drill holes'),
 };
 
-/** @param {typeof params} k */
-export default function build(k) {
+export default function build(k: typeof params) {
   const W = k.span, D = k.depth, T = k.plate;
   const end = W / 2 - 0.12;
 
@@ -79,18 +88,25 @@ const VASE = String.raw`// paraplot — a lathe turned vessel
 // The profile is a 2d spline: edit it in the spline dock.
 
 export const params = {
+  /** total vessel height */
   height: num(1.85, { min: 0.8, max: 3.0, step: 0.01,  label: 'height' }),
+  /** widest body radius */
   width:  num(0.62, { min: 0.15, max: 1.2, step: 0.005, label: 'width' }),
+  /** neck and rim radius */
   neck:   num(0.28, { min: 0.06, max: 0.62, step: 0.005, label: 'neck' }),
+  /** wall thickness; offsets the inner cavity */
   wall:   num(0.055, { min: 0.02, max: 0.14, step: 0.002, label: 'wall' }),
+  /** subtract the inner cavity */
   hollow: bool(true, 'hollow'),
+  /** unglazed body colour */
   clay:   color('#cfd2c9', 'clay'),
+  /** glaze band colour */
   glaze:  color('#3f7a72', 'glaze'),
+  /** height of the glaze band */
   band:   num(0.16, { min: 0.0, max: 0.4, step: 0.005, label: 'band' }),
 };
 
-/** @param {typeof params} k */
-export default function build(k) {
+export default function build(k: typeof params) {
   const h = k.height, w = k.width, n = k.neck;
 
   // [radius, y] pairs, from the foot to the rim
@@ -131,16 +147,21 @@ const GYROID = String.raw`// paraplot — a gyroid lattice
 // An implicit surface, clipped by a sphere.
 
 export const params = {
+  /** spatial frequency of the gyroid */
   freq:   num(6.0,  { min: 2.0, max: 12.0, step: 0.05, label: 'frequency' }),
+  /** lattice wall thickness */
   thick:  num(0.46, { min: 0.12, max: 0.9, step: 0.01, label: 'thickness' }),
+  /** clipping sphere radius */
   radius: num(1.30, { min: 0.7, max: 2.0, step: 0.01,  label: 'radius' }),
+  /** hollow core radius; 0 disables it */
   core:   num(0.55, { min: 0.0, max: 1.0, step: 0.01,  label: 'core' }),
+  /** shader-clock animation speed */
   motion: num(0.5,  { min: 0.0, max: 2.0, step: 0.01,  label: 'motion' }),
+  /** surface colour */
   tint:   color('#7fa6a0', 'tint'),
 };
 
-/** @param {typeof params} k */
-export default function build(k) {
+export default function build(k: typeof params) {
   const f = k.freq;
 
   // classic gyroid: sin(x)cos(y) + sin(y)cos(z) + sin(z)cos(x)
@@ -165,21 +186,25 @@ const ORBIT = String.raw`// paraplot — a scene that moves
 // of (parameters, time), so it is deterministic and replayable.
 
 export const params = {
+  /** number of orbs */
   count:  int(7,    { min: 3, max: 14, label: 'orbs' }),
+  /** orbit radius */
   radius: num(1.15, { min: 0.6, max: 2.0, step: 0.01 }),
+  /** orb radius */
   size:   num(0.18, { min: 0.06, max: 0.34, step: 0.005 }),
+  /** orbit speed; negative reverses direction */
   speed:  num(0.18, { min: -1.0, max: 1.0, step: 0.005, label: 'speed', unit: 'rev/s' }),
+  /** vertical wobble amplitude */
   wobble: num(0.45, { min: 0.0, max: 1.2, step: 0.01 }),
+  /** orbital plane tilt, in degrees */
   tilt:   num(20,   { min: 0, max: 65, step: 0.5 }),
+  /** orb colour */
   gold:   color('#d9a05b', 'orbs'),
+  /** frame colour */
   steel:  color('#aebbc7', 'frame'),
 };
 
-/**
- * @param {typeof params} k
- * @param {number} t
- */
-export default function build(k, t) {
+export default function build(k: typeof params, t: number) {
   const phase = t * k.speed * TAU;
 
   const orbs = range(k.count).map((i) => {
@@ -207,21 +232,25 @@ const DOG = String.raw`// paraplot — a dog that wags its tail
 // The second argument is time; everything except the tail is static.
 
 export const params = {
+  /** tail wag amplitude */
   wag:    num(0.30, { min: 0.0, max: 0.7, step: 0.01, label: 'tail wag' }),
+  /** wag speed */
   speed:  num(1.10, { min: 0.1, max: 3.0, step: 0.05, label: 'wag speed' }),
+  /** tail lift angle */
   lift:   num(0.70, { min: 0.0, max: 1.0, step: 0.01, label: 'tail lift' }),
+  /** show the collar */
   collar: bool(true, 'collar'),
+  /** body colour */
   fur:    color('#c08a5a', 'fur'),
+  /** ears and nose colour */
   dark:   color('#6a4630', 'ears & nose'),
+  /** collar colour */
   red:    color('#c94f3d', 'collar'),
+  /** tail tip colour */
   cream:  color('#efd9b4', 'tail tip'),
 };
 
-/**
- * @param {typeof params} k
- * @param {number} t
- */
-export default function build(k, t) {
+export default function build(k: typeof params, t: number) {
   // --- tail: a spline with a travelling wave, anchored to its own tip
   const tailPoints = range(6).map((i) => {
     const u = i / 5;
@@ -280,23 +309,29 @@ const IMPELLER = String.raw`// paraplot — a centrifugal impeller
 // the root curve sits on the disc, the tip curve twists with "lean".
 
 export const params = {
+  /** number of blades */
   blades:    int(7,    { min: 3, max: 12, label: 'blades' }),
+  /** outer blade radius */
   radius:    num(1.25, { min: 0.7, max: 1.7, step: 0.01,  label: 'radius' }),
+  /** blade sweep angle, in degrees */
   sweep:     num(52,   { min: 0, max: 90, step: 0.5,    label: 'sweep', unit: 'deg' }),
+  /** tip sweep multiplier */
   lean:      num(1.25, { min: 0.4, max: 2.0, step: 0.01, label: 'blade lean' }),
+  /** blade height */
   height:    num(0.50, { min: 0.15, max: 0.9, step: 0.01, label: 'blade height' }),
+  /** blade thickness */
   thickness: num(0.06, { min: 0.025, max: 0.14, step: 0.002, label: 'blade thickness' }),
+  /** hub radius */
   hub:       num(0.34, { min: 0.18, max: 0.5, step: 0.005, label: 'hub radius' }),
+  /** animation speed, rev/s */
   spin:      num(0.12, { min: 0.0, max: 1.0, step: 0.005, label: 'spin', unit: 'rev/s' }),
+  /** disc, rim and hub colour */
   steel:     color('#b9c2c9', 'steel'),
+  /** blade colour */
   brass:     color('#c08a4a', 'blades'),
 };
 
-/**
- * @param {typeof params} k
- * @param {number} t
- */
-export default function build(k, t) {
+export default function build(k: typeof params, t: number) {
   const R = k.radius, hubR = k.hub, H = k.height, T = k.thickness;
   const discH = 0.14;
   const baseY = discH;

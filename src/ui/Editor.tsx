@@ -13,7 +13,6 @@ import { CodeEditor } from './CodeEditor';
 import { ComponentTree } from './ComponentTree';
 import { Icon } from './Icon';
 import { ParamPanel } from './ParamPanel';
-import { SourcePreview } from './SourcePreview';
 import { SplineEditor, type SplinePlane } from './SplineEditor';
 import {
   SplineWorkspace,
@@ -70,9 +69,6 @@ function useThrottled<T>(value: T, ms: number): T {
 
 const MIN_SPLIT = 24;
 const MAX_SPLIT = 72;
-
-/** start fetching the editor bundle once, after the first rendered frame */
-let monacoPrefetchStarted = false;
 
 function loadSplit(): number {
   try {
@@ -177,9 +173,11 @@ function EditorImpl({ initial, onSaved, onExit }: EditorProps) {
   /* editor / viewport split */
   const [split, setSplit] = useState<number>(loadSplit);
   const [views, setViews] = useState<ViewState>(loadViews);
-  const [monacoTabs, setMonacoTabs] = useState<Set<'scene' | 'shader'>>(() => new Set());
-  /** Monaco panes are created on first use and then kept mounted, so tab
-   *  switches are instant and the undo stack/scroll position survive */
+  // the typed scene editor is always mounted; the shader pane is created on
+  // first use and then kept, so tab switches keep undo/scroll state
+  const [monacoTabs, setMonacoTabs] = useState<Set<'scene' | 'shader'>>(
+    () => new Set(['scene']),
+  );
   const openMonaco = useCallback((key: 'scene' | 'shader') => {
     setMonacoTabs((prev) => {
       if (prev.has(key)) return prev;
@@ -204,19 +202,6 @@ function EditorImpl({ initial, onSaved, onExit }: EditorProps) {
   const [compiled, setCompiled] = useState<CompileOutcome | null>(null);
   const [compiling, setCompiling] = useState(true);
   const requestSeq = useRef(0);
-
-  // fetch Monaco while the GPU is already busy: opening the typed editor should
-  // not pay for a multi-megabyte download at the moment of the click
-  const prefetchMonaco = useCallback(() => {
-    if (monacoPrefetchStarted) return;
-    monacoPrefetchStarted = true;
-    const idle = (window as Window & {
-      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
-    }).requestIdleCallback;
-    const load = () => void import('../monaco-setup');
-    if (idle) idle(load, { timeout: 5000 });
-    else window.setTimeout(load, 2500);
-  }, []);
   const filters = useMemo(
     () => ({ hidden: [...hidden], isolated }),
     [hidden, isolated],
@@ -816,10 +801,7 @@ function EditorImpl({ initial, onSaved, onExit }: EditorProps) {
             </button>
             <button
               className={`tab ${tab === 'scene' ? 'active' : ''}`}
-              onClick={() => {
-                setTab('scene');
-                openMonaco('scene');
-              }}
+              onClick={() => setTab('scene')}
             >
               <span className="filedot ts" />
               scene.ts
@@ -870,30 +852,14 @@ function EditorImpl({ initial, onSaved, onExit }: EditorProps) {
             </div>
 
             <div className={`editor-layer ${tab === 'scene' ? 'visible' : ''}`}>
-              {monacoTabs.has('scene') ? (
-                <CodeEditor
-                  value={source}
-                  onChange={setSource}
-                  readOnly={initialCompiling}
-                  language="typescript"
-                  active={splinePlacement !== 'editor' && tab === 'scene'}
-                  path="scene.ts"
-                />
-              ) : (
-                <SourcePreview
-                  value={source}
-                  busy={initialCompiling}
-                  readOnly={initialCompiling}
-                  onChange={setSource}
-                  language="typescript"
-                  note={
-                    initialCompiling
-                      ? 'compiling the scene — the source is read-only until it is ready'
-                      : 'basic source editor — open the typed editor for type hints'
-                  }
-                  onActivate={() => openMonaco('scene')}
-                />
-              )}
+              <CodeEditor
+                value={source}
+                onChange={setSource}
+                readOnly={initialCompiling}
+                language="typescript"
+                active={splinePlacement !== 'editor' && tab === 'scene'}
+                path="scene.ts"
+              />
             </div>
             <div className={`editor-layer ${tab === 'shader' ? 'visible' : ''}`}>
               {/* keep the shader pane mounted once opened, but do not build it
@@ -972,7 +938,6 @@ function EditorImpl({ initial, onSaved, onExit }: EditorProps) {
             settings={settings}
             onSettings={updateSettings}
             onError={setRenderError}
-            onFirstFrame={prefetchMonaco}
             animate={animate}
             animated={good?.animated ?? false}
             playing={playing}
