@@ -20,6 +20,8 @@ jobs:
     env:
       # project site path: https://nikhedonia.net/paraplot/
       VITE_BASE: /paraplot/
+      # repository secret; leave unset to disable analytics
+      VITE_GA_MEASUREMENT_ID: ${{ secrets.GA_MEASUREMENT_ID }}
     steps:
       - uses: actions/checkout@v4
 

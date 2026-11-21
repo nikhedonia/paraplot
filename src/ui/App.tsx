@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { track, trackPageView } from '../analytics';
 import type { Preset } from '../core/presets';
 import type { ProjectRecord } from '../store/projects';
 import {
@@ -35,6 +36,10 @@ export function App() {
   const [persistent, setPersistent] = useState(true);
   const [active, setActive] = useState<ProjectRecord | null>(null);
   const routeId = parseProjectId(hash);
+
+  useEffect(() => {
+    trackPageView(routeId ? 'editor' : 'landing');
+  }, [routeId]);
 
   useEffect(() => {
     const onHash = () => setHash(window.location.hash || '#/');
@@ -85,12 +90,16 @@ export function App() {
   }, []);
 
   const create = useCallback(
-    async (source?: string, preferredName?: string) => {
+    async (source?: string, preferredName?: string, example?: Preset) => {
       const list = projects ?? [];
       const name = uniqueName(preferredName ?? `Untitled ${list.length + 1}`, list);
       const record = newProject(name, source);
       await saveProject(record);
       setProjects((prev) => [record, ...(prev ?? [])]);
+      track('project_create', {
+        mode: example ? 'example' : 'blank',
+        ...(example ? { example: example.id } : {}),
+      });
       go(record.id);
     },
     [projects, go],
@@ -98,13 +107,23 @@ export function App() {
 
   const createFromExample = useCallback(
     (preset: Preset) => {
-      void create(preset.source, preset.name);
+      track('example_open', { example: preset.id });
+      void create(preset.source, preset.name, preset);
     },
     [create],
   );
 
+  const openProject = useCallback(
+    (id: string) => {
+      track('project_open', { surface: 'card' });
+      go(id);
+    },
+    [go],
+  );
+
   const remove = useCallback(async (id: string) => {
     await deleteProject(id);
+    track('project_delete');
     setProjects((prev) => (prev ?? []).filter((p) => p.id !== id));
   }, []);
 
@@ -134,7 +153,7 @@ export function App() {
       persistent={persistent}
       onCreate={() => void create()}
       onCreateFromExample={createFromExample}
-      onOpen={go}
+      onOpen={openProject}
       onDelete={(id) => void remove(id)}
     />
   );

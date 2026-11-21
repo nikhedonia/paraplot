@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
+import { track } from '../analytics';
 import { compileScene, type CompileOk } from '../core/compile';
 import { generate, type CompiledProgram } from '../core/codegen';
 import type { Node } from '../core/types';
@@ -90,6 +91,7 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
   const [splinePlacement, setSplinePlacement] = useState<SplinePlacement>('dock');
   const [splineView, setSplineView] = useState<SplineViewMode>('split');
   const [comb, setComb] = useState(false);
+  const trackedName = useRef(initial.name);
   const [combDensity, setCombDensity] = useState(40);
   const [combScale, setCombScale] = useState(1);
   const [splinePlane, setSplinePlane] = useState<SplinePlane>('XY');
@@ -108,6 +110,10 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
   const [isolated, setIsolated] = useState<string | null>(null);
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   const [frameSignal, setFrameSignal] = useState(0);
+  const splinePlacementRef = useRef(splinePlacement);
+  splinePlacementRef.current = splinePlacement;
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
 
   /* editor / viewport split */
   const [split, setSplit] = useState<number>(loadSplit);
@@ -151,6 +157,23 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
   const lastGood = useRef<CompileOk | null>(null);
   useEffect(() => {
     if (compiled.ok) lastGood.current = compiled;
+  }, [compiled]);
+
+  const hadCompileError = useRef(false);
+  useEffect(() => {
+    if (!compiled.ok) {
+      if (!hadCompileError.current) {
+        const kind = /unexpected token|syntax/i.test(compiled.error)
+          ? 'syntax'
+          : /implicit\(/.test(compiled.error)
+            ? 'implicit'
+            : 'dsl';
+        track('compile_error', { kind });
+      }
+      hadCompileError.current = true;
+    } else {
+      hadCompileError.current = false;
+    }
   }, [compiled]);
 
   const good = compiled.ok ? compiled : lastGood.current;
@@ -332,18 +355,49 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
 
   /* ---- component tree actions ---- */
 
-  const toggleHidden = useCallback((id: string) => {
-    setHidden((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
+  const toggleHidden = useCallback(
+    (id: string) => {
+      track('component_visibility', { hidden: !hidden.has(id) });
+      setHidden((prev) => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      });
+    },
+    [hidden],
+  );
 
   const solo = useCallback((id: string | null) => {
+    track('component_solo', { solod: !!id });
     setIsolated(id);
     setFrameSignal((n) => n + 1);
+  }, []);
+
+  const placeSpline = useCallback((next: SplinePlacement) => {
+    if (splinePlacementRef.current === next) return;
+    track('spline_workspace', { placement: next });
+    setSplinePlacement(next);
+  }, []);
+
+  const toggleComb = useCallback((enabled: boolean) => {
+    track('curvature_comb', { enabled });
+    setComb(enabled);
+  }, []);
+
+  const updateSettings = useCallback((next: RenderSettings) => {
+    if (next.view !== settingsRef.current.view) {
+      track('analysis_view', { view: next.view });
+    }
+    setSettings(next);
+  }, []);
+
+  const togglePlay = useCallback(() => {
+    setPlaying((prev) => {
+      const next = !prev;
+      track('playback_toggle', { playing: next });
+      return next;
+    });
   }, []);
 
   const clearFilters = useCallback(() => {
@@ -474,10 +528,10 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
       onSelect={setSelectedSpline}
       onPoints={setSplinePoints}
       onReset={resetSpline}
-      onComb={setComb}
+      onComb={toggleComb}
       onPlane={setSplinePlane}
       onView={setSplineView}
-      onClose={() => setSplinePlacement('dock')}
+      onClose={() => placeSpline('dock')}
     />
   );
 
@@ -503,7 +557,12 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
           value={name}
           onChange={(e) => setName(e.target.value)}
           onBlur={() => {
+            const trimmed = name.trim() || 'Untitled';
             if (!name.trim()) setName('Untitled');
+            if (trimmed !== trackedName.current) {
+              trackedName.current = trimmed;
+              track('project_rename');
+            }
           }}
           spellCheck={false}
           aria-label="project name"
@@ -520,7 +579,7 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
           <div className="segmented small">
             <button
               className={splinePlacement === 'dock' ? 'active' : ''}
-              onClick={() => setSplinePlacement('dock')}
+              onClick={() => placeSpline('dock')}
               title="Spline editor in the dock"
               aria-pressed={splinePlacement === 'dock'}
             >
@@ -528,7 +587,7 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
             </button>
             <button
               className={splinePlacement === 'editor' ? 'active' : ''}
-              onClick={() => setSplinePlacement('editor')}
+              onClick={() => placeSpline('editor')}
               title="Spline editor in the editor pane"
               aria-pressed={splinePlacement === 'editor'}
             >
@@ -536,7 +595,7 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
             </button>
             <button
               className={splinePlacement === 'viewport' ? 'active' : ''}
-              onClick={() => setSplinePlacement('viewport')}
+              onClick={() => placeSpline('viewport')}
               title="Spline editor in place of the viewport"
               aria-pressed={splinePlacement === 'viewport'}
             >
@@ -695,12 +754,12 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
           <Viewport
             program={displayProgram}
             settings={settings}
-            onSettings={setSettings}
+            onSettings={updateSettings}
             onError={setRenderError}
             animate={animate}
             animated={good?.animated ?? false}
             playing={playing}
-            onTogglePlay={() => setPlaying((p) => !p)}
+            onTogglePlay={togglePlay}
             snapshotRef={captureRef}
             frameSignal={frameSignal}
             filterLabel={filterLabel}
@@ -733,7 +792,7 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
                 onChange={setSplinePoints}
                 onReset={resetSpline}
                 comb={comb}
-                onComb={setComb}
+                onComb={toggleComb}
                 combDensity={combDensity}
                 combScale={combScale}
                 onCombDensity={setCombDensity}
@@ -748,7 +807,7 @@ export function Editor({ initial, onSaved, onExit }: EditorProps) {
                   <span className="dock-count">{fullProgram?.splines.length ?? 0}</span>
                   <button
                     className="ghostbtn"
-                    onClick={() => setSplinePlacement('dock')}
+                    onClick={() => placeSpline('dock')}
                     title="Bring the spline editor back to the dock"
                   >
                     <Icon name="reset" size={12} /> restore

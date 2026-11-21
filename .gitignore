@@ -2,3 +2,8 @@ node_modules
 dist
 .DS_Store
 *.local
+
+# local environment (the deploy uses repository secrets)
+.env
+.env.local
+.env.*.local

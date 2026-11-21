@@ -376,6 +376,33 @@ Pushes to `main` (or `master`) deploy through GitHub Actions
 - Locally `npm run build` uses `/`; to reproduce the deployed asset paths run
   `VITE_BASE=/paraplot/ npm run build` and serve `dist` under `/paraplot/`.
 
+## Analytics
+
+GA4 is wired through `src/analytics.ts`. The deploy workflow exposes the
+repository secret **`GA_MEASUREMENT_ID`** as `VITE_GA_MEASUREMENT_ID` at build
+time; when it is absent, analytics is disabled and no gtag script is loaded.
+Vite inlines `VITE_*` values into the bundle — a measurement ID is a public
+identifier; the secret only keeps it out of git.
+
+After adding the secret, re-run the workflow (Actions → “Deploy to GitHub
+Pages” → Run workflow) so the deployed bundle is rebuilt with it.
+
+Tracked events:
+
+- `page_view` — landing / editor (sanitised paths, no project ids)
+- `project_create` (`mode`: blank|example), `project_open`, `project_delete`,
+  `project_rename`
+- `example_open`
+- `analysis_view`, `spline_workspace`, `curvature_comb`, `playback_toggle`
+- `component_visibility`, `component_solo`
+- `compile_error` (a category only: `syntax`, `implicit` or `dsl`)
+
+No source code, project names, project ids, spline points or parameter values
+are sent. GA sets analytics cookies; add a consent flow if your jurisdiction
+requires one.
+
+Local testing: `VITE_GA_MEASUREMENT_ID=G-XXXXXXX npm run dev`.
+
 ## Performance
 
 The viewport only draws when something actually changes:
